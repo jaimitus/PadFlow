@@ -264,10 +264,10 @@ pub mod win {
     pub fn cli_get_cloak_state() -> Option<bool> {
         let cli = find_hidhide_cli()?;
         let output = std::process::Command::new(cli).arg("--cloak-state").output().ok()?;
-        let txt = String::from_utf8_lossy(&output.stdout).to_lowercase();
-        if txt.contains("cloak-on") {
+        let txt = format!("{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)).to_lowercase();
+        if txt.contains("cloak-on") || txt.contains("active") || txt.contains("true") || txt.contains("enabled") {
             Some(true)
-        } else if txt.contains("cloak-off") {
+        } else if txt.contains("cloak-off") || txt.contains("inactive") || txt.contains("false") || txt.contains("disabled") {
             Some(false)
         } else {
             None
@@ -280,9 +280,10 @@ pub mod win {
         let txt = String::from_utf8_lossy(&output.stdout);
         let mut list = Vec::new();
         for line in txt.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("HID\\") || trimmed.starts_with("USB\\") || trimmed.starts_with("BTHENUM\\") {
-                list.push(trimmed.to_string());
+            let clean = line.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '\\' && c != '&' && c != '#').trim();
+            let upper = clean.to_uppercase();
+            if upper.contains(r"\VID_") || upper.starts_with(r"HID\") || upper.starts_with(r"USB\") || upper.starts_with(r"BTHENUM\") {
+                list.push(clean.to_string());
             }
         }
         Some(list)
@@ -294,9 +295,10 @@ pub mod win {
         let txt = String::from_utf8_lossy(&output.stdout);
         let mut list = Vec::new();
         for line in txt.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("HID\\") || trimmed.starts_with("USB\\") || trimmed.starts_with("BTHENUM\\") {
-                list.push(trimmed.to_string());
+            let clean = line.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '\\' && c != '&' && c != '#').trim();
+            let upper = clean.to_uppercase();
+            if upper.contains(r"\VID_") || upper.starts_with(r"HID\") || upper.starts_with(r"USB\") || upper.starts_with(r"BTHENUM\") {
+                list.push(clean.to_string());
             }
         }
         Some(list)
@@ -759,6 +761,33 @@ pub fn cloak_all_gaming_controllers() -> Result<Vec<String>, String> {
     #[cfg(not(windows))]
     {
         Ok(Vec::new())
+    }
+}
+
+pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
+    #[cfg(windows)]
+    {
+        if let Some(cli) = win::find_hidhide_cli() {
+            let _ = std::process::Command::new(&cli).arg("--cloak-off").status();
+            if let Some(devs) = win::cli_get_blacklist() {
+                for dev in devs {
+                    let _ = std::process::Command::new(&cli).args(["--dev-unhide", &dev]).status();
+                }
+            }
+        }
+
+        let _ = set_active(false);
+
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let _ = handle.set_blacklist(&[]);
+            let _ = handle.set_active(false);
+        }
+
+        Ok(get_status())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(get_status())
     }
 }
 

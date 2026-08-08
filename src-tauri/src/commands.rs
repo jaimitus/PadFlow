@@ -239,6 +239,14 @@ pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Res
     Ok(status)
 }
 
+/// Uncloaks all controllers and restores visibility to all games and apps.
+#[tauri::command]
+pub fn uncloak_all_controllers(app: AppHandle) -> Result<HidHideStatus, String> {
+    let status = hidhide::uncloak_all_controllers()?;
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
 /// Launches the HidHide driver installer with UAC Administrator privileges.
 #[tauri::command]
 pub fn install_hidhide_driver(app: AppHandle) -> Result<String, String> {

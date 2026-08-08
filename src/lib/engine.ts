@@ -524,6 +524,11 @@ export const padflow = {
     return web.hidhideStatus();
   },
 
+  async uncloakAllControllers(): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("uncloak_all_controllers");
+    return web.setHidHideActive(false);
+  },
+
   async installHidHideDriver(): Promise<string> {
     if (isNative()) {
       return tauriInvoke<string>("install_hidhide_driver");

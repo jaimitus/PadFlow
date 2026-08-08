@@ -346,13 +346,21 @@ export default function App() {
 
   const isDeviceCloaked = useCallback(
     (devicePath: string) => {
-      if (!hidhideStatus?.installed || !hidhideStatus.active || !hidhideStatus.hiddenDevices.length) {
+      if (!hidhideStatus?.installed || !hidhideStatus.active) {
         return false;
+      }
+      if (hidhideStatus.hiddenDevices.length === 0) {
+        return hidhideStatus.active;
       }
       const target = normalizeDevicePath(devicePath);
       return hidhideStatus.hiddenDevices.some((d) => {
         const norm = normalizeDevicePath(d);
-        return norm === target || norm.includes(target) || target.includes(norm) || d.toLowerCase() === devicePath.toLowerCase();
+        return (
+          norm === target ||
+          norm.includes(target) ||
+          target.includes(norm) ||
+          d.toLowerCase() === devicePath.toLowerCase()
+        );
       });
     },
     [hidhideStatus],
@@ -386,16 +394,28 @@ export default function App() {
     }
   }, [notify]);
 
+  const uncloakAll = useCallback(async () => {
+    try {
+      setHidhideStatus((prev) => (prev ? { ...prev, active: false, hiddenDevices: [] } : null));
+      const st = await padflow.uncloakAllControllers();
+      setHidhideStatus(st);
+      notify("🔓 All controllers uncloaked! Visibility restored to Windows & games.");
+    } catch (e) {
+      notify(`Uncloak failed: ${String(e)}`);
+    }
+  }, [notify]);
+
   const toggleHidHideActive = useCallback(async () => {
     try {
       const currentActive = hidhideStatus?.active ?? false;
       const nextActive = !currentActive;
+      setHidhideStatus((prev) => (prev ? { ...prev, active: nextActive } : null));
       const st = await padflow.setHidHideActive(nextActive);
       setHidhideStatus(st);
       notify(
         nextActive
-          ? "🛡️ HidHide protection enabled"
-          : "HidHide protection paused · physical gamepads uncloaked",
+          ? "🛡️ HidHide protection ENABLED (Physical gamepads cloaked)"
+          : "HidHide protection DISABLED (Physical gamepads uncloaked & visible)",
       );
     } catch (e) {
       notify(`HidHide toggle failed: ${String(e)}`);
@@ -632,7 +652,7 @@ export default function App() {
               <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
                 <SectionTitle
                   title="Anti-Double Input Shield"
-                  right={hidhideStatus?.installed ? (hidhideStatus.active ? "ACTIVE" : "PAUSED") : "NOT INSTALLED"}
+                  right={hidhideStatus?.installed ? (hidhideStatus.active ? "ACTIVE 🛡️" : "DISABLED") : "NOT INSTALLED"}
                 />
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -649,7 +669,7 @@ export default function App() {
                           : () => notify("HidHide driver is not installed. Click Install Driver above.")
                       }
                       className={cn(
-                        "relative h-5 w-9 rounded-full transition-colors",
+                        "relative h-5 w-9 rounded-full transition-colors cursor-pointer",
                         hidhideStatus?.installed && hidhideStatus?.active ? "bg-emerald-400" : "bg-white/12",
                       )}
                     >
@@ -663,16 +683,24 @@ export default function App() {
                   </div>
 
                   {hidhideStatus?.installed && (
-                    <div className="flex items-center justify-between pt-1 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/6 pt-2.5">
                       <span className="font-mono text-[10px] text-slate-400">
                         Hidden instances: <span className="text-emerald-300 font-bold">{hidhideStatus.hiddenDevices.length}</span>
                       </span>
-                      <button
-                        onClick={autoCloakAll}
-                        className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 font-mono text-[10px] text-emerald-300 hover:bg-emerald-400/20 transition-colors"
-                      >
-                        🛡️ CLOAK ALL CONTROLLERS
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={autoCloakAll}
+                          className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 font-mono text-[9.5px] text-emerald-300 hover:bg-emerald-400/20 transition-colors"
+                        >
+                          🛡️ CLOAK ALL
+                        </button>
+                        <button
+                          onClick={uncloakAll}
+                          className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[9.5px] text-slate-300 hover:bg-white/10 transition-colors"
+                        >
+                          🔓 UNCLOAK ALL
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
