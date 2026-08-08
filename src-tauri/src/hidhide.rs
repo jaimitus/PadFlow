@@ -75,10 +75,11 @@ pub fn string_list_to_multi_sz(strings: &[String]) -> Vec<u16> {
     }
     let mut buffer = Vec::new();
     for s in strings {
-        if s.is_empty() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        buffer.extend(s.encode_utf16());
+        buffer.extend(trimmed.encode_utf16());
         buffer.push(0);
     }
     buffer.push(0);
@@ -115,10 +116,11 @@ pub fn multi_sz_to_string_list(buffer: &[u16]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-mod win {
+pub mod win {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::path::PathBuf;
 
     type HANDLE = *mut std::ffi::c_void;
     const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
@@ -147,6 +149,8 @@ mod win {
 
         fn GetLastError() -> u32;
 
+        fn QueryDosDeviceW(lpDeviceName: *const u16, lpTargetPath: *mut u16, ucchMax: u32) -> u32;
+
         fn DeviceIoControl(
             hDevice: HANDLE,
             dwIoControlCode: u32,
@@ -159,6 +163,60 @@ mod win {
         ) -> i32;
     }
 
+    /// Converts a standard Windows drive path (e.g. `C:\Program Files\...`) to a full device path
+    /// (e.g. `\Device\HarddiskVolume3\Program Files\...`) required by HidHide's whitelist.
+    pub fn dos_path_to_device_path(dos_path: &str) -> String {
+        let clean = dos_path.trim();
+        if clean.starts_with(r"\Device\") {
+            return clean.to_string();
+        }
+
+        if clean.len() >= 2 && clean.as_bytes()[1] == b':' {
+            let drive = &clean[..2]; // e.g. "C:"
+            let rest = &clean[2..];  // e.g. "\Users\..."
+
+            let drive_wide: Vec<u16> = OsStr::new(drive)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            let mut target_buf = vec![0u16; 512];
+            let len = unsafe {
+                QueryDosDeviceW(
+                    drive_wide.as_ptr(),
+                    target_buf.as_mut_ptr(),
+                    target_buf.len() as u32,
+                )
+            };
+
+            if len > 0 {
+                let device_prefix = String::from_utf16_lossy(&target_buf[..len as usize])
+                    .trim_matches('\0')
+                    .to_string();
+                return format!("{}{}", device_prefix, rest);
+            }
+        }
+
+        clean.to_string()
+    }
+
+    pub fn find_hidhide_cli() -> Option<PathBuf> {
+        let candidate_paths = [
+            r"C:\Program Files\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe",
+            r"C:\Program Files\Nefarius Software Solutions\HidHide\HidHideCLI.exe",
+            r"C:\Program Files\Nefarius\HidHide\HidHideCLI.exe",
+            r"C:\Program Files\HidHide\HidHideCLI.exe",
+        ];
+
+        for p in &candidate_paths {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     pub struct HidHideHandle(HANDLE);
 
     impl HidHideHandle {
@@ -169,7 +227,7 @@ mod win {
                 .collect();
 
             unsafe {
-                // Nefarius documentation: Open with GENERIC_READ and full shared access
+                // Open with GENERIC_READ and full shared access
                 let mut handle = CreateFileW(
                     path_wide.as_ptr(),
                     GENERIC_READ,
@@ -180,7 +238,6 @@ mod win {
                     std::ptr::null_mut(),
                 );
 
-                // Fallback attempt with Read+Write if available
                 if handle == INVALID_HANDLE_VALUE || handle.is_null() {
                     handle = CreateFileW(
                         path_wide.as_ptr(),
@@ -223,8 +280,25 @@ mod win {
                 return Ok(active_byte != 0);
             }
 
-            let err = unsafe { GetLastError() };
-            Err(format!("Failed to get HidHide active status (Win32 error {err})"))
+            let ioctl_read = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_READ_DATA);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_read,
+                    std::ptr::null(),
+                    0,
+                    &mut active_byte as *mut _ as *mut _,
+                    1,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok2 != 0 {
+                Ok(active_byte != 0)
+            } else {
+                let err = unsafe { GetLastError() };
+                Err(format!("Failed to get HidHide active status (Win32 error {err})"))
+            }
         }
 
         pub fn set_active(&self, active: bool) -> Result<(), String> {
@@ -246,8 +320,25 @@ mod win {
                 return Ok(());
             }
 
-            let err = unsafe { GetLastError() };
-            Err(format!("Failed to set HidHide active status (Win32 error {err})"))
+            let ioctl_write = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_WRITE_DATA);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_write,
+                    &active_byte as *const _ as *const _,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok2 != 0 {
+                Ok(())
+            } else {
+                let err = unsafe { GetLastError() };
+                Err(format!("Failed to set HidHide active status (Win32 error {err})"))
+            }
         }
 
         pub fn get_blacklist(&self) -> Result<Vec<String>, String> {
@@ -287,7 +378,26 @@ mod win {
                 return Ok(multi_sz_to_string_list(&buffer));
             }
 
-            Ok(Vec::new())
+            let fn_code = (ioctl >> 2) & 0xFFF;
+            let ioctl_read = ctl_code(FILE_DEVICE_UNKNOWN, fn_code, METHOD_BUFFERED, FILE_READ_DATA);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_read,
+                    std::ptr::null(),
+                    0,
+                    buffer.as_mut_ptr() as *mut _,
+                    (buffer.len() * 2) as u32,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if ok2 != 0 {
+                Ok(multi_sz_to_string_list(&buffer))
+            } else {
+                Ok(Vec::new())
+            }
         }
 
         fn set_multi_sz(&self, ioctl: u32, list: &[String]) -> Result<(), String> {
@@ -306,6 +416,24 @@ mod win {
                 )
             };
             if ok != 0 {
+                return Ok(());
+            }
+
+            let fn_code = (ioctl >> 2) & 0xFFF;
+            let ioctl_write = ctl_code(FILE_DEVICE_UNKNOWN, fn_code, METHOD_BUFFERED, FILE_WRITE_DATA);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_write,
+                    multi_sz.as_ptr() as *const _,
+                    (multi_sz.len() * 2) as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok2 != 0 {
                 return Ok(());
             }
 
@@ -332,7 +460,7 @@ mod win {
 pub fn is_installed() -> bool {
     #[cfg(windows)]
     {
-        win::HidHideHandle::open().is_ok()
+        win::find_hidhide_cli().is_some() || win::HidHideHandle::open().is_ok()
     }
     #[cfg(not(windows))]
     {
@@ -349,7 +477,7 @@ pub fn get_status() -> HidHideStatus {
     {
         let Ok(handle) = win::HidHideHandle::open() else {
             return HidHideStatus {
-                installed: false,
+                installed: win::find_hidhide_cli().is_some(),
                 active: false,
                 whitelisted: false,
                 hidden_devices: Vec::new(),
@@ -361,9 +489,14 @@ pub fn get_status() -> HidHideStatus {
         let hidden = handle.get_blacklist().unwrap_or_default();
         let whitelist = handle.get_whitelist().unwrap_or_default();
         let exe_lower = current_exe.to_lowercase();
+        let dev_lower = win::dos_path_to_device_path(&current_exe).to_lowercase();
+
         let whitelisted = whitelist.iter().any(|w| {
             let w_lower = w.to_lowercase();
-            w_lower == exe_lower || exe_lower.ends_with(&w_lower) || w_lower.ends_with(&exe_lower)
+            w_lower == exe_lower
+                || w_lower == dev_lower
+                || exe_lower.ends_with(&w_lower)
+                || w_lower.ends_with(&exe_lower)
         });
 
         HidHideStatus {
@@ -390,18 +523,40 @@ pub fn get_status() -> HidHideStatus {
 pub fn auto_whitelist_current_process() -> Result<(), String> {
     #[cfg(windows)]
     {
-        let handle = win::HidHideHandle::open()?;
         let current_exe = std::env::current_exe()
             .map_err(|e| format!("Failed to get current executable path: {e}"))?
             .to_string_lossy()
             .to_string();
 
-        let mut whitelist = handle.get_whitelist().unwrap_or_default();
-        let exe_lower = current_exe.to_lowercase();
-        if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
-            whitelist.push(current_exe);
-            handle.set_whitelist(&whitelist)?;
+        let device_path = win::dos_path_to_device_path(&current_exe);
+
+        // Try CLI first if present
+        if let Some(cli) = win::find_hidhide_cli() {
+            let _ = std::process::Command::new(cli)
+                .args(["--app-reg", &device_path])
+                .status();
         }
+
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let mut whitelist = handle.get_whitelist().unwrap_or_default();
+            let dev_lower = device_path.to_lowercase();
+            let exe_lower = current_exe.to_lowercase();
+
+            let mut changed = false;
+            if !whitelist.iter().any(|w| w.to_lowercase() == dev_lower) {
+                whitelist.push(device_path);
+                changed = true;
+            }
+            if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
+                whitelist.push(current_exe);
+                changed = true;
+            }
+
+            if changed {
+                let _ = handle.set_whitelist(&whitelist);
+            }
+        }
+
         Ok(())
     }
     #[cfg(not(windows))]
@@ -419,13 +574,24 @@ pub fn hide_device(raw_path: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
         let _ = auto_whitelist_current_process();
-        let handle = win::HidHideHandle::open()?;
-        let mut list = handle.get_blacklist().unwrap_or_default();
-        if !list.iter().any(|p| p.eq_ignore_ascii_case(&normalized)) {
-            list.push(normalized);
-            handle.set_blacklist(&list)?;
+
+        // 1. Try official CLI if present
+        if let Some(cli) = win::find_hidhide_cli() {
+            let _ = std::process::Command::new(cli)
+                .args(["--dev-hide", &normalized, "--cloak-on"])
+                .status();
         }
-        let _ = handle.set_active(true);
+
+        // 2. Direct IOCTL
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let mut list = handle.get_blacklist().unwrap_or_default();
+            if !list.iter().any(|p| p.eq_ignore_ascii_case(&normalized)) {
+                list.push(normalized);
+                let _ = handle.set_blacklist(&list);
+            }
+            let _ = handle.set_active(true);
+        }
+
         Ok(())
     }
     #[cfg(not(windows))]
@@ -440,12 +606,19 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        let handle = win::HidHideHandle::open()?;
-        let mut list = handle.get_blacklist().unwrap_or_default();
-        let initial_len = list.len();
-        list.retain(|p| !p.eq_ignore_ascii_case(&normalized) && !p.eq_ignore_ascii_case(raw_path));
-        if list.len() != initial_len {
-            handle.set_blacklist(&list)?;
+        if let Some(cli) = win::find_hidhide_cli() {
+            let _ = std::process::Command::new(cli)
+                .args(["--dev-unhide", &normalized])
+                .status();
+        }
+
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let mut list = handle.get_blacklist().unwrap_or_default();
+            let initial_len = list.len();
+            list.retain(|p| !p.eq_ignore_ascii_case(&normalized) && !p.eq_ignore_ascii_case(raw_path));
+            if list.len() != initial_len {
+                let _ = handle.set_blacklist(&list);
+            }
         }
         Ok(())
     }
@@ -459,8 +632,15 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
 pub fn set_active(active: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let handle = win::HidHideHandle::open()?;
-        handle.set_active(active)
+        if let Some(cli) = win::find_hidhide_cli() {
+            let arg = if active { "--cloak-on" } else { "--cloak-off" };
+            let _ = std::process::Command::new(cli).arg(arg).status();
+        }
+
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let _ = handle.set_active(active);
+        }
+        Ok(())
     }
     #[cfg(not(windows))]
     {
