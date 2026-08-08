@@ -41,11 +41,18 @@ export interface StickAxisProfile {
   radial: boolean;
 }
 
+export interface TriggerProfile {
+  innerDeadzone: number;
+  outerDeadzone: number;
+  hairTrigger: boolean;
+}
+
 export interface StickProfileConfig {
   left: StickAxisProfile;
   right: StickAxisProfile;
-  triggerInner: number;
-  triggerOuter: number;
+  triggerLeft: TriggerProfile;
+  triggerRight: TriggerProfile;
+  flipTriggers: boolean;
   rumbleIntensity: number;
   turboPolling: boolean;
 }

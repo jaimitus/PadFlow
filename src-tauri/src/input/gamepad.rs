@@ -148,11 +148,30 @@ pub enum CurveKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TriggerProfile {
+    pub inner_deadzone: f32,
+    pub outer_deadzone: f32,
+    pub hair_trigger: bool,
+}
+
+impl Default for TriggerProfile {
+    fn default() -> Self {
+        Self {
+            inner_deadzone: 0.03,
+            outer_deadzone: 0.98,
+            hair_trigger: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StickProfileConfig {
     pub left: StickAxisProfile,
     pub right: StickAxisProfile,
-    pub trigger_inner: f32,
-    pub trigger_outer: f32,
+    pub trigger_left: TriggerProfile,
+    pub trigger_right: TriggerProfile,
+    pub flip_triggers: bool,
     pub rumble_intensity: f32,
     /// Extra polling aggressiveness: `true` pins the loop to 1000 Hz+.
     pub turbo_polling: bool,
@@ -163,8 +182,9 @@ impl Default for StickProfileConfig {
         Self {
             left: StickAxisProfile::default(),
             right: StickAxisProfile::default(),
-            trigger_inner: 0.03,
-            trigger_outer: 0.99,
+            trigger_left: TriggerProfile::default(),
+            trigger_right: TriggerProfile::default(),
+            flip_triggers: false,
             rumble_intensity: 1.0,
             turbo_polling: true,
         }
@@ -321,11 +341,13 @@ fn shape_axis(v: f32, p: &StickAxisProfile) -> f32 {
 }
 
 #[inline(always)]
-fn shape_trigger(v: f32, inner: f32, outer: f32) -> f32 {
-    let inner = inner.clamp(0.0, 0.9);
-    let outer = outer.clamp(inner + 0.02, 1.0);
+pub fn shape_trigger(v: f32, p: &TriggerProfile) -> f32 {
+    let inner = p.inner_deadzone.clamp(0.0, 0.8);
+    let outer = p.outer_deadzone.clamp(inner + 0.02, 1.0);
     if v <= inner {
         0.0
+    } else if p.hair_trigger {
+        1.0
     } else {
         ((v - inner) / (outer - inner)).min(1.0)
     }
@@ -1193,8 +1215,23 @@ where
             let prof = *inner.profile.read();
             let (lx, ly) = shape_stick(raw.lx, raw.ly, &prof.left);
             let (rx, ry) = shape_stick(raw.rx, raw.ry, &prof.right);
-            let lt = shape_trigger(raw.l2, prof.trigger_inner, prof.trigger_outer);
-            let rt = shape_trigger(raw.r2, prof.trigger_inner, prof.trigger_outer);
+            let mut lt = shape_trigger(raw.l2, &prof.trigger_left);
+            let mut rt = shape_trigger(raw.r2, &prof.trigger_right);
+            let mut buttons_mask = raw.buttons;
+
+            if prof.flip_triggers {
+                // Swap physical L1/R1 bumpers with L2/R2 triggers
+                let l1_pressed = (buttons_mask & buttons::L1) != 0;
+                let r1_pressed = (buttons_mask & buttons::R1) != 0;
+
+                let l2_bumper = if lt > 0.3 { buttons::L1 } else { 0 };
+                let r2_bumper = if rt > 0.3 { buttons::R1 } else { 0 };
+
+                lt = if l1_pressed { 1.0 } else { 0.0 };
+                rt = if r1_pressed { 1.0 } else { 0.0 };
+
+                buttons_mask = (buttons_mask & !(buttons::L1 | buttons::R1)) | l2_bumper | r2_bumper;
+            }
 
             let mut touch_points = Vec::with_capacity(2);
             for t_idx in 0..raw.touch_count.min(2) as usize {
@@ -1209,7 +1246,7 @@ where
                 right: [rx, ry],
                 trigger_left: lt,
                 trigger_right: rt,
-                buttons: raw.buttons,
+                buttons: buttons_mask,
                 dpad: raw.dpad,
                 touch_points,
                 gyro: raw.gyro,

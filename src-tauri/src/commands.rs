@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::hidhide::{self, HidHideStatus};
 use crate::input::gamepad::{
     apply_curve, shape_stick, CurveKind, EngineStats, GamepadInfo, InputSnapshot,
-    StickAxisProfile, StickProfileConfig,
+    StickAxisProfile, StickProfileConfig, TriggerProfile,
 };
 use crate::AppState;
 
@@ -81,12 +81,26 @@ pub fn update_stick_profile(
 ) -> Result<StickProfileConfig, String> {
     validate_axis("left", &profile_data.left)?;
     validate_axis("right", &profile_data.right)?;
+    validate_trigger("triggerLeft", &profile_data.trigger_left)?;
+    validate_trigger("triggerRight", &profile_data.trigger_right)?;
     if !(0.0..=1.0).contains(&profile_data.rumble_intensity) {
         return Err("rumble_intensity must be within 0.0..=1.0".into());
     }
     state.engine.set_profile(profile_data);
     let _ = app.emit("padflow-profile-updated", profile_data);
     Ok(profile_data)
+}
+
+fn validate_trigger(name: &str, t: &TriggerProfile) -> Result<(), String> {
+    if t.inner_deadzone < 0.0 || t.inner_deadzone > 0.8 {
+        return Err(format!("{name}.inner_deadzone must be within 0.0..=0.8"));
+    }
+    if t.outer_deadzone <= t.inner_deadzone || t.outer_deadzone > 1.0 {
+        return Err(format!(
+            "{name}.outer_deadzone must be greater than inner deadzone and <= 1.0"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_axis(name: &str, a: &StickAxisProfile) -> Result<(), String> {

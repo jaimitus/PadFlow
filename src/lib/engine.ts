@@ -1,4 +1,4 @@
-import { DEFAULT_PROFILE, shapeStick, clamp01 } from "./curves";
+import { DEFAULT_PROFILE, shapeStick, shapeTrigger, clamp01 } from "./curves";
 import type {
   ConnectionType,
   EngineStats,
@@ -319,6 +319,25 @@ class WebEngine {
     const [rx2, ry2] = shapeStick(snap.rawRight[0], snap.rawRight[1], this.profile.right);
     snap.left = [lx2, ly2];
     snap.right = [rx2, ry2];
+
+    let lt = shapeTrigger(snap.triggerLeft, this.profile.triggerLeft);
+    let rt = shapeTrigger(snap.triggerRight, this.profile.triggerRight);
+
+    if (this.profile.flipTriggers) {
+      const l1_pressed = (snap.buttons & BUTTONS.L1) !== 0;
+      const r1_pressed = (snap.buttons & BUTTONS.R1) !== 0;
+
+      const l2_bumper = lt > 0.3 ? BUTTONS.L1 : 0;
+      const r2_bumper = rt > 0.3 ? BUTTONS.R1 : 0;
+
+      lt = l1_pressed ? 1 : 0;
+      rt = r1_pressed ? 1 : 0;
+
+      snap.buttons = (snap.buttons & ~(BUTTONS.L1 | BUTTONS.R1)) | l2_bumper | r2_bumper;
+    }
+
+    snap.triggerLeft = lt;
+    snap.triggerRight = rt;
 
     this.battery = Math.max(4, this.battery - 0.00035);
     snap.battery = Math.round(this.battery);

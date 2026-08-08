@@ -5,6 +5,7 @@ import LiveTelemetry from "./components/LiveTelemetry";
 import ProfileSelector from "./components/ProfileSelector";
 import SourceExplorer from "./components/SourceExplorer";
 import StickCurveCanvas from "./components/StickCurveCanvas";
+import TriggerTuner from "./components/TriggerTuner";
 import { DEFAULT_PROFILE, cloneProfile } from "./lib/curves";
 import { padflow } from "./lib/engine";
 import type {
@@ -15,6 +16,7 @@ import type {
   PadProfilePreset,
   StickAxisProfile,
   StickProfileConfig,
+  TriggerProfile,
 } from "./lib/types";
 import { cn } from "./utils/cn";
 
@@ -199,6 +201,29 @@ export default function App() {
       setProfile((p) => ({ ...p, [side]: { ...p[side], ...patch } }));
     },
     [],
+  );
+
+  const patchTrigger = useCallback(
+    (side: "left" | "right", patch: Partial<TriggerProfile>) => {
+      setPresetId(null);
+      setProfile((p) => ({
+        ...p,
+        [side === "left" ? "triggerLeft" : "triggerRight"]: {
+          ...p[side === "left" ? "triggerLeft" : "triggerRight"],
+          ...patch,
+        },
+      }));
+    },
+    [],
+  );
+
+  const patchFlipTriggers = useCallback(
+    (flip: boolean) => {
+      setPresetId(null);
+      setProfile((p) => ({ ...p, flipTriggers: flip }));
+      notify(flip ? "Bumper & Trigger swap enabled (L1/R1 ↔ L2/R2)" : "Standard Bumper & Trigger mapping restored");
+    },
+    [notify],
   );
 
   const applyPreset = useCallback(
@@ -677,7 +702,17 @@ export default function App() {
                 />
               </div>
 
-              <LiveTelemetry getSnapshot={getSnapshot} />
+              <TriggerTuner
+                triggerLeft={profile.triggerLeft}
+                triggerRight={profile.triggerRight}
+                flipTriggers={profile.flipTriggers}
+                onLeftChange={(patch) => patchTrigger("left", patch)}
+                onRightChange={(patch) => patchTrigger("right", patch)}
+                onFlipChange={patchFlipTriggers}
+                getSnapshot={getSnapshot}
+              />
+
+              <LiveTelemetry getSnapshot={getSnapshot} flipTriggers={profile.flipTriggers} />
             </div>
           </div>
         )}
