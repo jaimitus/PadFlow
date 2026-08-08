@@ -97,6 +97,9 @@ export default function App() {
     [],
   );
 
+  const selectedIdRef = useRef<string | null>(null);
+  selectedIdRef.current = selectedId;
+
   // ---- boot: enumerate + subscribe + start engine --------------------------
   useEffect(() => {
     let unInput: (() => void) | undefined;
@@ -127,21 +130,6 @@ export default function App() {
         setHidhideStatus(st);
       });
 
-      try {
-        const s = await padflow.startEngine();
-        if (!alive) return;
-        setStats(s);
-        setRunning(true);
-        notify(
-          native
-            ? "ViGEmBus target allocated · realtime loop online"
-            : "Browser preview engine online · plug a pad to drive it live",
-        );
-      } catch {
-        // Engine may already be running from auto-start; that's OK.
-        setRunning(true);
-      }
-
       padflow
         .getHidHideStatus()
         .then((st) => {
@@ -154,6 +142,8 @@ export default function App() {
           .getEngineStatus()
           .then((st) => {
             if (alive) {
+              setStats(st.stats);
+              setRunning(st.stats.running);
               setVigemInstalled(st.vigemInstalled);
               if (st.hidhideStatus) setHidhideStatus(st.hidhideStatus);
             }
@@ -165,7 +155,7 @@ export default function App() {
       if (native) {
         pollTimer = setInterval(async () => {
           try {
-            const s = await padflow.getLastSnapshot(selectedId ?? undefined);
+            const s = await padflow.getLastSnapshot(selectedIdRef.current ?? undefined);
             if (s && (s.padId || s.timestampMs > 0)) {
               snapRef.current = s;
             }
@@ -183,7 +173,7 @@ export default function App() {
       unHidHide?.();
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [native, notify, selectedId]);
+  }, [native, notify]);
 
   // ---- slow UI refreshes (battery / device list) ---------------------------
   useEffect(() => {
