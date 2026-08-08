@@ -226,11 +226,13 @@ pub fn toggle_device_hide(
 /// Cloaks all currently connected PlayStation / HID controllers automatically.
 #[tauri::command]
 pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Result<HidHideStatus, String> {
+    let _ = state.engine.rescan();
     let devices = state.engine.devices();
     let _ = hidhide::auto_whitelist_current_process();
     for dev in devices {
         let _ = hidhide::hide_device(&dev.path);
     }
+    let _ = hidhide::cloak_all_gaming_controllers();
     let _ = hidhide::set_active(true);
     let status = hidhide::get_status();
     let _ = app.emit("padflow-hidhide-updated", status.clone());
