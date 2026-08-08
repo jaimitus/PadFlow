@@ -346,11 +346,13 @@ export default function App() {
 
   const isDeviceCloaked = useCallback(
     (devicePath: string) => {
-      if (!hidhideStatus?.active || !hidhideStatus.hiddenDevices.length) return false;
+      if (!hidhideStatus?.installed || !hidhideStatus.active || !hidhideStatus.hiddenDevices.length) {
+        return false;
+      }
       const target = normalizeDevicePath(devicePath);
       return hidhideStatus.hiddenDevices.some((d) => {
         const norm = normalizeDevicePath(d);
-        return norm.includes(target) || target.includes(norm) || d.toLowerCase() === devicePath.toLowerCase();
+        return norm === target || norm.includes(target) || target.includes(norm) || d.toLowerCase() === devicePath.toLowerCase();
       });
     },
     [hidhideStatus],
@@ -385,14 +387,15 @@ export default function App() {
   }, [notify]);
 
   const toggleHidHideActive = useCallback(async () => {
-    if (!hidhideStatus) return;
     try {
-      const st = await padflow.setHidHideActive(!hidhideStatus.active);
+      const currentActive = hidhideStatus?.active ?? false;
+      const nextActive = !currentActive;
+      const st = await padflow.setHidHideActive(nextActive);
       setHidhideStatus(st);
       notify(
-        !hidhideStatus.active
-          ? "HidHide protection enabled"
-          : "HidHide protection disabled · physical gamepads uncloaked",
+        nextActive
+          ? "🛡️ HidHide protection enabled"
+          : "HidHide protection paused · physical gamepads uncloaked",
       );
     } catch (e) {
       notify(`HidHide toggle failed: ${String(e)}`);
@@ -640,17 +643,20 @@ export default function App() {
                       </p>
                     </div>
                     <button
-                      disabled={!hidhideStatus?.installed}
-                      onClick={toggleHidHideActive}
+                      onClick={
+                        hidhideStatus?.installed
+                          ? toggleHidHideActive
+                          : () => notify("HidHide driver is not installed. Click Install Driver above.")
+                      }
                       className={cn(
-                        "relative h-5 w-9 rounded-full transition-colors disabled:opacity-40",
-                        hidhideStatus?.active ? "bg-emerald-400" : "bg-white/12",
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        hidhideStatus?.installed && hidhideStatus?.active ? "bg-emerald-400" : "bg-white/12",
                       )}
                     >
                       <span
                         className={cn(
                           "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
-                          hidhideStatus?.active ? "left-[18px]" : "left-0.5",
+                          hidhideStatus?.installed && hidhideStatus?.active ? "left-[18px]" : "left-0.5",
                         )}
                       />
                     </button>

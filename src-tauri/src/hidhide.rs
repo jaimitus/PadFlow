@@ -27,6 +27,7 @@ const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> 
 
 const FILE_DEVICE_UNKNOWN: u32 = 0x00000022;
 const METHOD_BUFFERED: u32 = 0;
+const FILE_ANY_ACCESS: u32 = 0;
 const FILE_READ_DATA: u32 = 1;
 const FILE_WRITE_DATA: u32 = 2;
 
@@ -164,7 +165,8 @@ mod win {
                 .collect();
 
             unsafe {
-                let handle = CreateFileW(
+                // Try opening with Read + Write access
+                let mut handle = CreateFileW(
                     path_wide.as_ptr(),
                     GENERIC_READ | GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -173,6 +175,19 @@ mod win {
                     FILE_ATTRIBUTE_NORMAL,
                     std::ptr::null_mut(),
                 );
+
+                // If non-elevated user mode denied write, fallback to Generic Read
+                if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+                    handle = CreateFileW(
+                        path_wide.as_ptr(),
+                        GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        std::ptr::null_mut(),
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        std::ptr::null_mut(),
+                    );
+                }
 
                 if handle == INVALID_HANDLE_VALUE || handle.is_null() {
                     return Err("HidHide driver not installed or control device not accessible".into());
@@ -198,6 +213,24 @@ mod win {
                 )
             };
             if ok != 0 {
+                return Ok(active_byte != 0);
+            }
+
+            // Fallback with FILE_ANY_ACCESS
+            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_ANY_ACCESS);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_any,
+                    std::ptr::null(),
+                    0,
+                    &mut active_byte as *mut _ as *mut _,
+                    1,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok2 != 0 {
                 Ok(active_byte != 0)
             } else {
                 Err("Failed to get HidHide active status".into())
@@ -220,9 +253,27 @@ mod win {
                 )
             };
             if ok != 0 {
+                return Ok(());
+            }
+
+            // Fallback with FILE_ANY_ACCESS
+            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_ANY_ACCESS);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_any,
+                    &active_byte as *const _ as *const _,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok2 != 0 {
                 Ok(())
             } else {
-                Err("Failed to set HidHide active status".into())
+                Err("Failed to set HidHide active status. Ensure HidHide is running.".into())
             }
         }
 
@@ -243,27 +294,7 @@ mod win {
         }
 
         fn get_multi_sz(&self, ioctl: u32) -> Result<Vec<String>, String> {
-            let mut needed = 0u32;
-            // First probe for required size
-            unsafe {
-                let _ = DeviceIoControl(
-                    self.0,
-                    ioctl,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut needed,
-                    std::ptr::null_mut(),
-                );
-            }
-
-            if needed == 0 {
-                return Ok(Vec::new());
-            }
-
-            let u16_count = (needed as usize + 1) / 2;
-            let mut buffer = vec![0u16; u16_count + 4];
+            let mut buffer = vec![0u16; 8192];
             let mut returned = 0u32;
 
             let ok = unsafe {
@@ -279,11 +310,30 @@ mod win {
                 )
             };
 
-            if ok == 0 {
-                return Err(format!("DeviceIoControl failed for IOCTL {ioctl}"));
+            if ok != 0 {
+                return Ok(multi_sz_to_string_list(&buffer));
             }
 
-            Ok(multi_sz_to_string_list(&buffer))
+            let fn_code = (ioctl >> 2) & 0xFFF;
+            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, fn_code, METHOD_BUFFERED, FILE_ANY_ACCESS);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_any,
+                    std::ptr::null(),
+                    0,
+                    buffer.as_mut_ptr() as *mut _,
+                    (buffer.len() * 2) as u32,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if ok2 != 0 {
+                Ok(multi_sz_to_string_list(&buffer))
+            } else {
+                Ok(Vec::new())
+            }
         }
 
         fn set_multi_sz(&self, ioctl: u32, list: &[String]) -> Result<(), String> {
@@ -302,6 +352,24 @@ mod win {
                 )
             };
             if ok != 0 {
+                return Ok(());
+            }
+
+            let fn_code = (ioctl >> 2) & 0xFFF;
+            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, fn_code, METHOD_BUFFERED, FILE_ANY_ACCESS);
+            let ok2 = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl_any,
+                    multi_sz.as_ptr() as *const _,
+                    (multi_sz.len() * 2) as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok2 != 0 {
                 Ok(())
             } else {
                 Err(format!("DeviceIoControl failed to update list for IOCTL {ioctl}"))
