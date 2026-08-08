@@ -1,0 +1,578 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DeadzoneTuner from "./components/DeadzoneTuner";
+import GamepadCard from "./components/GamepadCard";
+import LiveTelemetry from "./components/LiveTelemetry";
+import ProfileSelector from "./components/ProfileSelector";
+import SourceExplorer from "./components/SourceExplorer";
+import StickCurveCanvas from "./components/StickCurveCanvas";
+import { DEFAULT_PROFILE, cloneProfile } from "./lib/curves";
+import { padflow } from "./lib/engine";
+import type {
+  EngineStats,
+  GamepadInfo,
+  InputSnapshot,
+  PadProfilePreset,
+  StickAxisProfile,
+  StickProfileConfig,
+} from "./lib/types";
+import { cn } from "./utils/cn";
+
+const EMPTY_SNAPSHOT: InputSnapshot = {
+  padId: "",
+  rawLeft: [0, 0],
+  rawRight: [0, 0],
+  left: [0, 0],
+  right: [0, 0],
+  triggerLeft: 0,
+  triggerRight: 0,
+  buttons: 0,
+  dpad: 8,
+  touchPoints: [],
+  gyro: [0, 0, 0],
+  accel: [0, 0, 1],
+  battery: -1,
+  charging: false,
+  latencyUs: 0,
+  pollHz: 0,
+  timestampMs: 0,
+};
+
+const ACCENT_L = "34,211,238";
+const ACCENT_R = "168,85,247";
+
+export default function App() {
+  const [devices, setDevices] = useState<GamepadInfo[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<StickProfileConfig>(cloneProfile(DEFAULT_PROFILE));
+  const [presetId, setPresetId] = useState<string | null>(null);
+  const [stats, setStats] = useState<EngineStats | null>(null);
+  const [tab, setTab] = useState<"studio" | "source">("studio");
+  const [toast, setToast] = useState<string | null>(null);
+  const [battery, setBattery] = useState({ level: -1, charging: false });
+  const [running, setRunning] = useState(false);
+  const [vigemInstalled, setVigemInstalled] = useState(true);
+
+  const snapRef = useRef<InputSnapshot>(EMPTY_SNAPSHOT);
+  const native = padflow.mode() === "native";
+
+  const notify = useCallback((msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  // ---- boot: enumerate + subscribe + start engine --------------------------
+  useEffect(() => {
+    let unInput: (() => void) | undefined;
+    let unStats: (() => void) | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let alive = true;
+
+    (async () => {
+      try {
+        const list = await padflow.getConnectedGamepads();
+        if (!alive) return;
+        setDevices(list);
+        setSelectedId((cur) => cur ?? list[0]?.id ?? null);
+      } catch (e) {
+        notify(`Enumeration failed: ${String(e)}`);
+      }
+
+      // Event-driven snapshot subscription (primary path)
+      unInput = await padflow.onInput((s) => {
+        snapRef.current = s;
+      });
+      unStats = await padflow.onStats((s) => {
+        setStats(s);
+        setRunning(s.running);
+      });
+
+      try {
+        const s = await padflow.startEngine();
+        if (!alive) return;
+        setStats(s);
+        setRunning(true);
+        notify(
+          native
+            ? "ViGEmBus target allocated · realtime loop online"
+            : "Browser preview engine online · plug a pad to drive it live",
+        );
+      } catch {
+        // Engine may already be running from auto-start; that's OK.
+        setRunning(true);
+      }
+
+      if (native) {
+        padflow
+          .getEngineStatus()
+          .then((st) => {
+            if (alive) setVigemInstalled(st.vigemInstalled);
+          })
+          .catch(() => undefined);
+      }
+
+      // Polling fallback: directly pull last snapshot via IPC at 60Hz.
+      // This guarantees live input even if Tauri event delivery is broken.
+      if (native) {
+        pollTimer = setInterval(async () => {
+          try {
+            const s = await padflow.getLastSnapshot();
+            if (s && (s.padId || s.timestampMs > 0)) {
+              snapRef.current = s;
+            }
+          } catch {
+            // silently retry next tick
+          }
+        }, 16);
+      }
+    })();
+
+    return () => {
+      alive = false;
+      unInput?.();
+      unStats?.();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [native, notify]);
+
+  // ---- slow UI refreshes (battery / device list) ---------------------------
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const s = snapRef.current;
+      setBattery((b) =>
+        b.level === s.battery && b.charging === s.charging
+          ? b
+          : { level: s.battery, charging: s.charging },
+      );
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      try {
+        const list = await padflow.getConnectedGamepads();
+        setDevices((prev) =>
+          JSON.stringify(prev.map((p) => p.id)) === JSON.stringify(list.map((p) => p.id))
+            ? prev.map((p) => ({ ...p, ...list.find((l) => l.id === p.id) }))
+            : list,
+        );
+        setSelectedId((cur) => (cur && list.some((l) => l.id === cur) ? cur : list[0]?.id ?? null));
+      } catch {
+        /* pad vanished mid-scan — retried next tick */
+      }
+    }, 3000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // ---- push profile to the engine (debounced) ------------------------------
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      padflow.updateStickProfile(profile).catch((e) => notify(`Profile rejected: ${String(e)}`));
+    }, 40);
+    return () => window.clearTimeout(id);
+  }, [profile, notify]);
+
+  // ---- handlers ------------------------------------------------------------
+  const patchAxis = useCallback(
+    (side: "left" | "right", patch: Partial<StickAxisProfile>) => {
+      setPresetId(null);
+      setProfile((p) => ({ ...p, [side]: { ...p[side], ...patch } }));
+    },
+    [],
+  );
+
+  const applyPreset = useCallback(
+    (preset: PadProfilePreset) => {
+      setProfile(cloneProfile(preset.config));
+      setPresetId(preset.id);
+      notify(`${preset.name} profile pushed to the input thread`);
+    },
+    [notify],
+  );
+
+  const setLed = useCallback(
+    async (padId: string, rgb: [number, number, number]) => {
+      setDevices((d) => d.map((p) => (p.id === padId ? { ...p, led: rgb } : p)));
+      try {
+        await padflow.setLedColor(padId, rgb[0], rgb[1], rgb[2]);
+      } catch (e) {
+        notify(`LED report failed: ${String(e)}`);
+      }
+    },
+    [notify],
+  );
+
+  const toggleEngine = useCallback(async () => {
+    try {
+      if (running) {
+        const s = await padflow.stopEngine();
+        setStats(s);
+        setRunning(false);
+        snapRef.current = EMPTY_SNAPSHOT;
+        notify("Engine stopped · virtual pad neutralised");
+      } else {
+        const s = await padflow.startEngine();
+        setStats(s);
+        setRunning(true);
+        notify("Engine running · feeding virtual Xbox 360 pad");
+      }
+    } catch (e) {
+      notify(String(e));
+    }
+  }, [running, notify]);
+
+  const getLeft = useCallback(
+    () => ({ raw: snapRef.current.rawLeft, shaped: snapRef.current.left }),
+    [],
+  );
+  const getRight = useCallback(
+    () => ({ raw: snapRef.current.rawRight, shaped: snapRef.current.right }),
+    [],
+  );
+  const getSnapshot = useCallback(() => snapRef.current, []);
+
+  const selected = useMemo(
+    () => devices.find((d) => d.id === selectedId) ?? devices[0] ?? null,
+    [devices, selectedId],
+  );
+
+  const latencyMs = stats ? stats.avgLatencyUs / 1000 : 0;
+
+  return (
+    <div className="relative min-h-screen bg-[#05070d] text-slate-200">
+      <div className="pointer-events-none absolute inset-0 pf-grid" />
+      <div className="pointer-events-none absolute -top-40 left-1/2 h-[420px] w-[820px] -translate-x-1/2 rounded-full bg-cyan-500/10 blur-[120px]" />
+
+      <div className="relative mx-auto max-w-[1500px] px-5 pb-16 pt-5">
+        {/* ---------- header ---------- */}
+        <header className="mb-5 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[0.03] px-5 py-3.5 backdrop-blur">
+          <div className="flex items-center gap-3">
+            <img
+              src="/logo.png"
+              alt="PadFlow Logo"
+              className="h-10 w-10 rounded-xl object-cover shadow-[0_0_28px_-4px] shadow-cyan-400/50 border border-white/10"
+            />
+            <div>
+              <h1 className="text-lg font-bold leading-tight tracking-tight text-white">
+                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v1.0.0</span>
+              </h1>
+              <p className="font-mono text-[10px] text-slate-500">
+                DualShock 4 / DualSense → XInput bridge · ViGEmBus · &lt;15 MB RAM
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip
+              label="POLL"
+              value={`${stats?.pollHz ?? 0} Hz`}
+              tone={running ? "good" : "idle"}
+            />
+            <Chip
+              label="LATENCY"
+              value={`${latencyMs.toFixed(2)} ms`}
+              tone={latencyMs > 0 && latencyMs < 1 ? "good" : "idle"}
+            />
+            <Chip
+              label="VIRTUAL PAD"
+              value={stats?.virtualPadOnline ? "X360 ONLINE" : "OFFLINE"}
+              tone={stats?.virtualPadOnline ? "good" : "bad"}
+            />
+            <Chip label="MODE" value={native ? "NATIVE HID" : "WEB PREVIEW"} tone={native ? "good" : "warn"} />
+
+            <div className="ml-1 flex rounded-lg border border-white/8 bg-white/5 p-0.5">
+              {(["studio", "source"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={cn(
+                    "rounded-md px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors",
+                    tab === t ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300",
+                  )}
+                >
+                  {t === "studio" ? "Studio" : "Rust core"}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={toggleEngine}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition-all",
+                running
+                  ? "bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                  : "bg-gradient-to-r from-cyan-400 to-violet-500 text-slate-950 hover:brightness-110",
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  running ? "bg-rose-400 pf-live-dot" : "bg-slate-900",
+                )}
+              />
+              {running ? "STOP ENGINE" : "START ENGINE"}
+            </button>
+          </div>
+        </header>
+
+        {native && !vigemInstalled && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-amber-200 shadow-lg backdrop-blur">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-400/20 text-amber-300 font-bold">
+                ⚠️
+              </span>
+              <div>
+                <p className="text-xs font-semibold text-amber-100">
+                  ViGEmBus Driver Required for Virtual Xbox 360 Pad
+                </p>
+                <p className="font-mono text-[10px] text-amber-300/80">
+                  Input curves and live monitoring work, but games require ViGEmBus to receive mapped inputs.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={async () => {
+                notify("Launching ViGEmBus installer wizard (accept Administrator prompt)...");
+                try {
+                  const res = await padflow.installVigemDriver();
+                  notify(res);
+                  const st = await padflow.getEngineStatus();
+                  setVigemInstalled(st.vigemInstalled);
+                  setStats(st.stats);
+                } catch (e) {
+                  notify(`Install error: ${String(e)}`);
+                }
+              }}
+              className="flex items-center gap-2 rounded-xl bg-amber-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-amber-300 hover:shadow-md hover:shadow-amber-400/20"
+            >
+              🛠️ INSTALL VIGEMBUS DRIVER
+            </button>
+          </div>
+        )}
+
+        {tab === "source" ? (
+          <SourceExplorer />
+        ) : (
+          <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+            {/* ---------- left column ---------- */}
+            <div className="space-y-4">
+              <section>
+                <SectionTitle
+                  title="Controllers"
+                  right={`${devices.length} detected`}
+                />
+                <div className="space-y-2.5">
+                  {devices.map((pad) => (
+                    <GamepadCard
+                      key={pad.id}
+                      pad={pad}
+                      selected={pad.id === selected?.id}
+                      liveBattery={pad.id === snapRef.current.padId ? battery.level : pad.battery}
+                      charging={pad.id === snapRef.current.padId ? battery.charging : pad.charging}
+                      onSelect={() => setSelectedId(pad.id)}
+                      onLed={(rgb) => setLed(pad.id, rgb)}
+                      onRumble={() => {
+                        padflow.testRumble(0.6, 0.9).catch(() => undefined);
+                        notify("Haptic pulse sent (450 ms)");
+                      }}
+                    />
+                  ))}
+                  {devices.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
+                      <p className="text-sm text-slate-400">No controller detected</p>
+                      <p className="mt-1 font-mono text-[10px] text-slate-600">
+                        Connect a DualShock 4 / DualSense over USB or Bluetooth
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <ProfileSelector
+                activeId={presetId}
+                currentConfig={profile}
+                onSelect={applyPreset}
+                onReset={() => {
+                  setProfile(cloneProfile(DEFAULT_PROFILE));
+                  setPresetId(null);
+                  notify("Profile reset to engine defaults");
+                }}
+                notify={notify}
+              />
+
+              <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
+                <SectionTitle title="Engine" right={stats?.driver ?? "—"} />
+                <div className="grid grid-cols-2 gap-2">
+                  <Stat label="Reports" value={(stats?.polls ?? 0).toLocaleString()} />
+                  <Stat label="Peak lat." value={`${((stats?.peakLatencyUs ?? 0) / 1000).toFixed(2)} ms`} />
+                  <Stat label="Dropped" value={String(stats?.droppedReports ?? 0)} />
+                  <Stat label="Reconnects" value={String(stats?.reconnects ?? 0)} />
+                </div>
+
+                <div className="mt-3 space-y-2.5 border-t border-white/8 pt-3">
+                  <div>
+                    <div className="mb-1 flex items-baseline justify-between">
+                      <span className="text-[11px] text-slate-300">Rumble intensity</span>
+                      <span className="font-mono text-[11px] text-slate-100">
+                        {(profile.rumbleIntensity * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={profile.rumbleIntensity}
+                      onChange={(e) =>
+                        setProfile((p) => ({ ...p, rumbleIntensity: parseFloat(e.target.value) }))
+                      }
+                      className="pf-range h-1.5 w-full cursor-pointer appearance-none rounded-full"
+                      style={{
+                        background: `linear-gradient(90deg, rgb(250,204,21) 0%, rgb(250,204,21) ${
+                          profile.rumbleIntensity * 100
+                        }%, rgba(255,255,255,0.09) ${profile.rumbleIntensity * 100}%, rgba(255,255,255,0.09) 100%)`,
+                        ["--pf-accent" as string]: "rgb(250,204,21)",
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] text-slate-300">Turbo polling</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        pins the HID thread at 1 kHz (time-critical)
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setProfile((p) => ({ ...p, turboPolling: !p.turboPolling }))}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.turboPolling ? "bg-cyan-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.turboPolling ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* ---------- right column ---------- */}
+            <div className="space-y-4">
+              <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
+                <SectionTitle
+                  title="Stick response matrix"
+                  right="input magnitude → virtual output"
+                />
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <StickCurveCanvas
+                    label="Left stick · movement"
+                    accent={ACCENT_L}
+                    profile={profile.left}
+                    onChange={(patch) => patchAxis("left", patch)}
+                    getSample={getLeft}
+                  />
+                  <StickCurveCanvas
+                    label="Right stick · aim"
+                    accent={ACCENT_R}
+                    profile={profile.right}
+                    onChange={(patch) => patchAxis("right", patch)}
+                    getSample={getRight}
+                  />
+                </div>
+              </section>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <DeadzoneTuner
+                  title="Left stick tuner"
+                  accent={ACCENT_L}
+                  profile={profile.left}
+                  onChange={(patch) => patchAxis("left", patch)}
+                />
+                <DeadzoneTuner
+                  title="Right stick tuner"
+                  accent={ACCENT_R}
+                  profile={profile.right}
+                  onChange={(patch) => patchAxis("right", patch)}
+                />
+              </div>
+
+              <LiveTelemetry getSnapshot={getSnapshot} />
+            </div>
+          </div>
+        )}
+
+        <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4 font-mono text-[10px] text-slate-600">
+          <span>
+            PadFlow · open source ·{" "}
+            <button
+              type="button"
+              onClick={() => padflow.openUrl("https://github.com/jaimitus/PadFlow")}
+              className="text-slate-400 hover:text-cyan-300 underline transition-colors cursor-pointer"
+            >
+              github.com/jaimitus/PadFlow
+            </button>
+            {" "}· Windows 10 / 11 · requires ViGEmBus 1.22+
+          </span>
+          <span>
+            active pad:{" "}
+            <span className="text-slate-400">{selected?.name ?? "none"}</span>
+          </span>
+        </footer>
+      </div>
+
+      {toast && (
+        <div className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-cyan-400/30 bg-slate-950/95 px-4 py-2.5 font-mono text-[11px] text-cyan-100 shadow-2xl backdrop-blur">
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SectionTitle({ title, right }: { title: string; right?: string }) {
+  return (
+    <div className="mb-2.5 flex items-baseline justify-between">
+      <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-300">
+        {title}
+      </h2>
+      {right && <span className="font-mono text-[10px] text-slate-600">{right}</span>}
+    </div>
+  );
+}
+
+function Chip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "good" | "bad" | "warn" | "idle";
+}) {
+  const tones = {
+    good: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300",
+    bad: "border-rose-400/25 bg-rose-400/10 text-rose-300",
+    warn: "border-amber-400/25 bg-amber-400/10 text-amber-300",
+    idle: "border-white/8 bg-white/5 text-slate-400",
+  } as const;
+  return (
+    <div className={cn("rounded-lg border px-2.5 py-1", tones[tone])}>
+      <span className="font-mono text-[9px] uppercase tracking-wider opacity-70">{label}</span>
+      <span className="ml-1.5 font-mono text-[11px] font-semibold tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/8 bg-white/[0.03] px-2.5 py-1.5">
+      <p className="font-mono text-[9px] uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="font-mono text-[13px] tabular-nums text-slate-100">{value}</p>
+    </div>
+  );
+}

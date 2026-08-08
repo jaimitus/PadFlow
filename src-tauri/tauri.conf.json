@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PadFlow",
+  "version": "1.0.0",
+  "identifier": "dev.padflow.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "PadFlow — Gamepad Studio",
+        "width": 1360,
+        "height": 900,
+        "minWidth": 1080,
+        "minHeight": 720,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "resources": ["resources/ViGEmBus_Setup.exe"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": ["English"]
+      }
+    },
+    "shortDescription": "Ultra low-latency DualShock 4 / DualSense to XInput bridge",
+    "longDescription": "PadFlow converts PS4 and PS5 controllers into virtual Xbox pads via ViGEmBus with sub-millisecond latency, visual stick response curves and lightbar control."
+  }
+}

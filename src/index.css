@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #05070d;
+  color: #e2e8f0;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Inter, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ---- range sliders ------------------------------------------------------ */
+.pf-range {
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+.pf-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 15px;
+  width: 15px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 3px solid var(--pf-accent, #38bdf8);
+  box-shadow: 0 0 12px -1px var(--pf-accent, #38bdf8);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+.pf-range::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.pf-range::-moz-range-thumb {
+  height: 13px;
+  width: 13px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 3px solid var(--pf-accent, #38bdf8);
+  cursor: pointer;
+}
+
+/* ---- live button pips --------------------------------------------------- */
+.pf-btn {
+  transition:
+    background-color 0.06s linear,
+    border-color 0.06s linear,
+    box-shadow 0.06s linear,
+    transform 0.06s linear;
+}
+.pf-btn[data-on="1"] {
+  background-color: rgba(34, 211, 238, 0.22);
+  border-color: rgba(34, 211, 238, 0.75);
+  box-shadow: 0 0 16px -2px rgba(34, 211, 238, 0.9);
+  transform: translateY(1px) scale(0.97);
+}
+
+/* ---- scrollbar ---------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
+
+/* ---- animated grid backdrop -------------------------------------------- */
+.pf-grid {
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+@keyframes pf-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+.pf-live-dot {
+  animation: pf-pulse 1.4s ease-in-out infinite;
+}

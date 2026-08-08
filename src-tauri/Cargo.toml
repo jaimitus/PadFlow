@@ -1,0 +1,70 @@
+[package]
+name = "padflow"
+version = "1.0.0"
+description = "PadFlow — ultra low-latency DualShock 4 / DualSense to XInput bridge & calibration matrix"
+authors = ["PadFlow Contributors"]
+license = "MIT"
+repository = "https://github.com/padflow/padflow"
+edition = "2021"
+rust-version = "1.77"
+
+# Keep the shipped binary tiny (~2.5 MB) and the runtime under 15 MB RAM.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false
+
+[lib]
+name = "padflow_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "padflow"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.0.4", features = [] }
+
+[dependencies]
+# ---- Tauri v2 shell -------------------------------------------------------
+tauri = { version = "2.1.1", features = ["tray-icon", "devtools", "image-png"] }
+tauri-plugin-shell = "2.0.2"
+tauri-plugin-store = "2.1.0"
+tauri-plugin-single-instance = "2.0.3"
+
+# ---- Serialization --------------------------------------------------------
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = "1.0.133"
+
+# ---- Async runtime (single-threaded, low overhead) ------------------------
+tokio = { version = "1.42.0", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+
+# ---- Virtual Xbox 360 / Xbox One pad via ViGEmBus -------------------------
+vigem-client = "0.1.4"
+
+# ---- Raw HID access for DualShock 4 / DualSense (USB + Bluetooth) ---------
+hidapi = { version = "2.6.3", default-features = false, features = ["windows-native"] }
+
+# ---- XInput / generic pad discovery fallback ------------------------------
+gilrs = "0.11.0"
+
+# ---- Utility --------------------------------------------------------------
+parking_lot = "0.12.3"
+once_cell = "1.20.2"
+thiserror = "2.0.6"
+log = "0.4.22"
+env_logger = "0.11.5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Media",
+] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
