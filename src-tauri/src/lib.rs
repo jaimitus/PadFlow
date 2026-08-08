@@ -52,6 +52,7 @@ pub fn run() {
             commands::stop_padflow_engine,
             commands::get_engine_status,
             commands::get_last_snapshot,
+            commands::select_gamepad,
             commands::test_rumble,
             commands::preview_curve,
             commands::toggle_window,

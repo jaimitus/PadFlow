@@ -765,6 +765,7 @@ struct EngineInner {
     rumble_request: Mutex<Option<(f32, f32)>>,
     devices: RwLock<Vec<GamepadInfo>>,
     last_snapshot: RwLock<InputSnapshot>,
+    last_snapshots: RwLock<HashMap<String, InputSnapshot>>,
     active_pad: RwLock<Option<String>>,
 }
 
@@ -792,6 +793,7 @@ impl PadFlowEngine {
                 rumble_request: Mutex::new(None),
                 devices: RwLock::new(Vec::new()),
                 last_snapshot: RwLock::new(InputSnapshot::default()),
+                last_snapshots: RwLock::new(HashMap::new()),
                 active_pad: RwLock::new(None),
             }),
         }
@@ -813,7 +815,30 @@ impl PadFlowEngine {
         self.inner.devices.read().clone()
     }
 
+    pub fn set_active_pad(&self, pad_id: &str) {
+        *self.inner.active_pad.write() = Some(pad_id.to_string());
+    }
+
+    pub fn active_pad(&self) -> Option<String> {
+        self.inner.active_pad.read().clone()
+    }
+
     pub fn snapshot(&self) -> InputSnapshot {
+        self.inner.last_snapshot.read().clone()
+    }
+
+    pub fn snapshot_for(&self, pad_id: Option<&str>) -> InputSnapshot {
+        let snaps = self.inner.last_snapshots.read();
+        if let Some(id) = pad_id {
+            if let Some(s) = snaps.get(id) {
+                return s.clone();
+            }
+        }
+        if let Some(ref active_id) = *self.inner.active_pad.read() {
+            if let Some(s) = snaps.get(active_id) {
+                return s.clone();
+            }
+        }
         self.inner.last_snapshot.read().clone()
     }
 
@@ -1009,75 +1034,65 @@ struct OpenPad {
     buf: [u8; 128],
 }
 
-fn open_first_pad(api: &mut HidApi, inner: &EngineInner) -> Option<OpenPad> {
+fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<OpenPad>) {
     let _ = api.refresh_devices();
     let cache = inner.led_state.read().clone();
     let list = enumerate(api, &cache);
-    log::info!("[open_first_pad] enumerate found {} device(s)", list.len());
-    for d in &list {
-        log::info!("  -> {} ({:?}) path={}", d.name, d.kind, d.path);
+
+    // Keep active_pad valid
+    {
+        let mut active = inner.active_pad.write();
+        if active.is_none() || !list.iter().any(|d| Some(&d.id) == active.as_ref()) {
+            *active = list.first().map(|d| d.id.clone());
+        }
     }
+
     *inner.devices.write() = list.clone();
 
-    let preferred = inner.active_pad.read().clone();
-    let target = preferred
-        .and_then(|id| list.iter().find(|d| d.id == id).cloned())
-        .or_else(|| list.first().cloned())?;
+    // Retain only currently connected pads
+    current_pads.retain(|p| list.iter().any(|d| d.id == p.info.id));
 
-    log::info!("[open_first_pad] will try to open: {} path={}", target.name, target.path);
-
-    // Try exact path match first
-    let found = api
-        .device_list()
-        .find(|d| d.path().to_string_lossy() == target.path);
-    if found.is_none() {
-        log::warn!("[open_first_pad] exact path match FAILED, trying VID/PID fallback");
-    }
-    let found = found.or_else(|| {
-        api.device_list().find(|d| {
-            d.vendor_id() == target.vendor_id
-                && d.product_id() == target.product_id
-                && (d.usage_page() == 0 || (d.usage_page() == 0x01 && (d.usage() == 0x05 || d.usage() == 0x04)))
-        })
-    });
-    let hid_info = match found {
-        Some(info) => info,
-        None => {
-            log::error!("[open_first_pad] no matching HID device found in device_list!");
-            return None;
+    // Open up to 4 gamepads
+    for target in list.iter().take(4) {
+        if current_pads.iter().any(|p| p.info.id == target.id) {
+            continue;
         }
-    };
 
-    log::info!("[open_first_pad] found HID device, usage_page=0x{:04X} usage=0x{:04X} path={}",
-        hid_info.usage_page(), hid_info.usage(), hid_info.path().to_string_lossy());
+        log::info!("[open_all_pads] trying to open pad {}: {} path={}", current_pads.len() + 1, target.name, target.path);
+        let found = api
+            .device_list()
+            .find(|d| d.path().to_string_lossy() == target.path)
+            .or_else(|| {
+                api.device_list().find(|d| {
+                    d.vendor_id() == target.vendor_id
+                        && d.product_id() == target.product_id
+                        && (d.usage_page() == 0 || (d.usage_page() == 0x01 && (d.usage() == 0x05 || d.usage() == 0x04)))
+                })
+            });
 
-    let device = match hid_info.open_device(api) {
-        Ok(d) => d,
-        Err(e) => {
-            log::error!("[open_first_pad] FAILED to open device: {e}");
-            return None;
-        }
-    };
-    log::info!("[open_first_pad] device opened successfully!");
+        let Some(hid_info) = found else { continue };
 
-    if device.set_blocking_mode(false).is_err() {
-        log::warn!("pad does not support non-blocking mode, falling back to timed reads");
+        let Ok(device) = hid_info.open_device(api) else {
+            log::error!("[open_all_pads] FAILED to open device: {}", target.id);
+            continue;
+        };
+
+        let _ = device.set_blocking_mode(false);
+        let _ = write_output_report(
+            &device,
+            target.kind,
+            target.connection,
+            target.led,
+            (0.0, 0.0),
+        );
+
+        log::info!("[open_all_pads] successfully opened pad: {}", target.id);
+        current_pads.push(OpenPad {
+            info: target.clone(),
+            device,
+            buf: [0u8; 128],
+        });
     }
-    // Prime the lightbar so the user gets instant visual confirmation.
-    let _ = write_output_report(
-        &device,
-        target.kind,
-        target.connection,
-        target.led,
-        (0.0, 0.0),
-    );
-    *inner.active_pad.write() = Some(target.id.clone());
-
-    Some(OpenPad {
-        info: target,
-        device,
-        buf: [0u8; 128],
-    })
 }
 
 fn poll_loop<F>(inner: Arc<EngineInner>, emit: F) -> Result<(), String>
@@ -1085,194 +1100,180 @@ where
     F: Fn(InputSnapshot) + Send + 'static,
 {
     let mut api = HidApi::new().map_err(|e| format!("hidapi init failed: {e}"))?;
-    let mut virt = match VirtualPad::create() {
-        Ok(v) => {
-            inner.virtual_online.store(true, Ordering::Relaxed);
-            Some(v)
-        }
-        Err(e) => {
-            log::error!("{e}");
-            inner.virtual_online.store(false, Ordering::Relaxed);
-            None
-        }
-    };
 
-    let mut pad: Option<OpenPad> = None;
-    let mut last_emit = Instant::now();
+    // Up to 4 virtual Xbox 360 pad slots
+    let mut virt_pads: Vec<Option<VirtualPad>> = (0..4).map(|_| None).collect();
+    let mut current_pads: Vec<OpenPad> = Vec::new();
+
     let mut last_scan = Instant::now() - Duration::from_secs(5);
+    let mut last_virt_retry = Instant::now() - Duration::from_secs(5);
+    let mut last_emit = Instant::now();
+    let emit_period = Duration::from_micros(16_666); // 60 Hz UI stream
+
     let mut hz_window = Instant::now();
     let mut hz_count: u32 = 0;
     let mut latency_acc: u64 = 0;
     let mut latency_n: u64 = 0;
-    let emit_period = Duration::from_micros(16_666); // 60 Hz UI stream
-
-    let mut read_ok_logged = false;
-    let mut zero_read_count: u64 = 0;
-    let mut last_virt_retry = Instant::now() - Duration::from_secs(5);
 
     while inner.running.load(Ordering::Relaxed) {
         // ---- (re)connection supervisor ------------------------------------
-        if pad.is_none() {
-            if last_scan.elapsed() >= Duration::from_millis(750) {
-                last_scan = Instant::now();
-                log::info!("[poll_loop] scanning for pad...");
-                pad = open_first_pad(&mut api, &inner);
-                if pad.is_some() {
-                    inner.reconnects.fetch_add(1, Ordering::Relaxed);
-                    log::info!("[poll_loop] pad connected!");
-                    read_ok_logged = false;
-                    zero_read_count = 0;
-                } else {
-                    log::info!("[poll_loop] no pad found");
-                }
+        if last_scan.elapsed() >= Duration::from_millis(750) {
+            last_scan = Instant::now();
+            let prev_count = current_pads.len();
+            open_all_pads(&mut api, &inner, &mut current_pads);
+            if current_pads.len() > prev_count {
+                inner.reconnects.fetch_add(1, Ordering::Relaxed);
             }
-            if pad.is_none() {
-                if virt.is_none() {
+        }
+
+        // Retry virtual pads every 1.5s
+        if last_virt_retry.elapsed() >= Duration::from_millis(1500) {
+            last_virt_retry = Instant::now();
+            let mut any_online = false;
+            for (idx, slot) in virt_pads.iter_mut().enumerate() {
+                if idx < current_pads.len() && slot.is_none() {
                     if let Ok(v) = VirtualPad::create() {
-                        virt = Some(v);
-                        inner.virtual_online.store(true, Ordering::Relaxed);
+                        log::info!("[poll_loop] ViGEmBus slot #{} allocated!", idx + 1);
+                        *slot = Some(v);
                     }
                 }
-                std::thread::sleep(Duration::from_millis(60));
-                continue;
+                if slot.is_some() {
+                    any_online = true;
+                }
             }
+            inner.virtual_online.store(any_online, Ordering::Relaxed);
         }
 
-        let p = pad.as_mut().expect("pad checked above");
-        let t0 = Instant::now();
-
-        // ---- read one HID report ------------------------------------------
-        let read = p.device.read_timeout(&mut p.buf, 4);
-        let n = match read {
-            Ok(0) => {
-                zero_read_count += 1;
-                if zero_read_count == 1 || zero_read_count % 5000 == 0 {
-                    log::warn!("[poll_loop] read_timeout returned 0 bytes ({zero_read_count} times)");
-                }
-                std::thread::yield_now();
-                continue;
-            }
-            Ok(n) => {
-                if !read_ok_logged {
-                    log::info!("[poll_loop] first successful read: {n} bytes, report_id=0x{:02X}", p.buf[0]);
-                    read_ok_logged = true;
-                }
-                n
-            },
-            Err(e) => {
-                log::warn!("pad {} dropped: {e}", p.info.id);
-                inner.dropped.fetch_add(1, Ordering::Relaxed);
-                pad = None;
-                *inner.active_pad.write() = None;
-                let mut blank = InputSnapshot::default();
-                blank.battery = -1;
-                *inner.last_snapshot.write() = blank.clone();
-                emit(blank);
-                continue;
-            }
-        };
-
-        let report_id = p.buf[0];
-        let bt = matches!(p.info.connection, ConnectionType::Bluetooth);
-        let raw = match p.info.kind {
-            PadKind::DualShock4 => match report_id {
-                0x01 => parse_ds4(&p.buf[..n], false),
-                0x11 => parse_ds4(&p.buf[..n], true),
-                _ => parse_ds4(&p.buf[..n], bt),
-            },
-            PadKind::DualSense | PadKind::DualSenseEdge => match report_id {
-                0x01 => parse_dualsense(&p.buf[..n], false),
-                0x31 => parse_dualsense(&p.buf[..n], true),
-                _ => parse_dualsense(&p.buf[..n], bt),
-            },
-            _ => parse_ds4(&p.buf[..n], bt).or_else(|| parse_dualsense(&p.buf[..n], bt)),
-        };
-        let Some(raw) = raw else {
-            inner.dropped.fetch_add(1, Ordering::Relaxed);
+        if current_pads.is_empty() {
+            std::thread::sleep(Duration::from_millis(30));
             continue;
-        };
-
-        // ---- shape ----------------------------------------------------------
-        let prof = *inner.profile.read();
-        let (lx, ly) = shape_stick(raw.lx, raw.ly, &prof.left);
-        let (rx, ry) = shape_stick(raw.rx, raw.ry, &prof.right);
-        let lt = shape_trigger(raw.l2, prof.trigger_inner, prof.trigger_outer);
-        let rt = shape_trigger(raw.r2, prof.trigger_inner, prof.trigger_outer);
-
-        let mut touch_points = Vec::with_capacity(2);
-        for i in 0..raw.touch_count.min(2) as usize {
-            touch_points.push(raw.touch[i]);
         }
 
-        let mut snap = InputSnapshot {
-            pad_id: p.info.id.clone(),
-            raw_left: [raw.lx, raw.ly],
-            raw_right: [raw.rx, raw.ry],
-            left: [lx, ly],
-            right: [rx, ry],
-            trigger_left: lt,
-            trigger_right: rt,
-            buttons: raw.buttons,
-            dpad: raw.dpad,
-            touch_points,
-            gyro: raw.gyro,
-            accel: raw.accel,
-            battery: raw.battery,
-            charging: raw.charging,
-            latency_us: 0,
-            poll_hz: inner.poll_hz.load(Ordering::Relaxed),
-            timestamp_ms: 0,
-        };
+        let t0 = Instant::now();
+        let active_id = inner.active_pad.read().clone();
+        let mut active_snap: Option<InputSnapshot> = None;
 
-        // ---- feed the virtual Xbox pad ---------------------------------------
-        if let Some(v) = virt.as_mut() {
-            if let Err(e) = v.submit(&snap) {
-                log::warn!("ViGEm submit failed: {e}");
-                inner.virtual_online.store(false, Ordering::Relaxed);
-                virt = None;
+        // ---- Read from each open pad ---------------------------------------
+        let mut read_any = false;
+        for (idx, p) in current_pads.iter_mut().enumerate() {
+            let read = p.device.read_timeout(&mut p.buf, 1);
+            let n = match read {
+                Ok(0) => continue,
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("pad {} dropped: {e}", p.info.id);
+                    inner.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
+
+            read_any = true;
+            let report_id = p.buf[0];
+            let bt = matches!(p.info.connection, ConnectionType::Bluetooth);
+            let raw = match p.info.kind {
+                PadKind::DualShock4 => match report_id {
+                    0x01 => parse_ds4(&p.buf[..n], false),
+                    0x11 => parse_ds4(&p.buf[..n], true),
+                    _ => parse_ds4(&p.buf[..n], bt),
+                },
+                PadKind::DualSense | PadKind::DualSenseEdge => match report_id {
+                    0x01 => parse_dualsense(&p.buf[..n], false),
+                    0x31 => parse_dualsense(&p.buf[..n], true),
+                    _ => parse_dualsense(&p.buf[..n], bt),
+                },
+                _ => parse_ds4(&p.buf[..n], bt).or_else(|| parse_dualsense(&p.buf[..n], bt)),
+            };
+
+            let Some(raw) = raw else {
+                inner.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+
+            // ---- shape ------------------------------------------------------
+            let prof = *inner.profile.read();
+            let (lx, ly) = shape_stick(raw.lx, raw.ly, &prof.left);
+            let (rx, ry) = shape_stick(raw.rx, raw.ry, &prof.right);
+            let lt = shape_trigger(raw.l2, prof.trigger_inner, prof.trigger_outer);
+            let rt = shape_trigger(raw.r2, prof.trigger_inner, prof.trigger_outer);
+
+            let mut touch_points = Vec::with_capacity(2);
+            for t_idx in 0..raw.touch_count.min(2) as usize {
+                touch_points.push(raw.touch[t_idx]);
             }
-        } else if last_virt_retry.elapsed() >= Duration::from_millis(1500) {
-            last_virt_retry = Instant::now();
-            if let Ok(v) = VirtualPad::create() {
-                log::info!("[poll_loop] ViGEmBus driver connected successfully!");
-                virt = Some(v);
-                inner.virtual_online.store(true, Ordering::Relaxed);
+
+            let snap = InputSnapshot {
+                pad_id: p.info.id.clone(),
+                raw_left: [raw.lx, raw.ly],
+                raw_right: [raw.rx, raw.ry],
+                left: [lx, ly],
+                right: [rx, ry],
+                trigger_left: lt,
+                trigger_right: rt,
+                buttons: raw.buttons,
+                dpad: raw.dpad,
+                touch_points,
+                gyro: raw.gyro,
+                accel: raw.accel,
+                battery: raw.battery,
+                charging: raw.charging,
+                latency_us: (t0.elapsed().as_micros() as u32).max(1),
+                poll_hz: inner.poll_hz.load(Ordering::Relaxed),
+                timestamp_ms: 0,
+            };
+
+            // Feed corresponding virtual Xbox 360 pad slot
+            if let Some(v_slot) = virt_pads.get_mut(idx) {
+                if let Some(v) = v_slot.as_mut() {
+                    if let Err(e) = v.submit(&snap) {
+                        log::warn!("ViGEm slot #{} submit failed: {e}", idx + 1);
+                        *v_slot = None;
+                    }
+                }
             }
+
+            // Store in multi-controller snapshot map
+            inner.last_snapshots.write().insert(p.info.id.clone(), snap.clone());
+
+            // If active pad or first pad, update active_snap for UI
+            if active_id.as_deref() == Some(&p.info.id) || active_snap.is_none() {
+                *inner.last_snapshot.write() = snap.clone();
+                active_snap = Some(snap);
+            }
+
+            // ---- pending lightbar / rumble writes ----------------------------
+            let pending_led = {
+                let mut q = inner.led_requests.lock();
+                q.remove(&p.info.id)
+            };
+            let pending_rumble = inner.rumble_request.lock().take();
+            if pending_led.is_some() || pending_rumble.is_some() {
+                let led = pending_led.unwrap_or(p.info.led);
+                let (w, s) = pending_rumble.unwrap_or((0.0, 0.0));
+                let gain = prof.rumble_intensity.clamp(0.0, 1.0);
+                if let Err(e) = write_output_report(
+                    &p.device,
+                    p.info.kind,
+                    p.info.connection,
+                    led,
+                    (w * gain, s * gain),
+                ) {
+                    log::warn!("output report failed: {e}");
+                } else {
+                    p.info.led = led;
+                    inner.led_state.write().insert(p.info.id.clone(), led);
+                }
+            }
+
+            // ---- telemetry --------------------------------------------------------
+            let dt_us = t0.elapsed().as_micros() as u32;
+            latency_acc += dt_us as u64;
+            latency_n += 1;
+            inner.peak_latency_us.fetch_max(dt_us, Ordering::Relaxed);
+            inner.polls.fetch_add(1, Ordering::Relaxed);
+            hz_count += 1;
         }
 
-        // ---- pending lightbar / rumble writes --------------------------------
-        let pending_led = {
-            let mut q = inner.led_requests.lock();
-            q.remove(&p.info.id).or_else(|| if q.is_empty() { None } else { None })
-        };
-        let pending_rumble = inner.rumble_request.lock().take();
-        if pending_led.is_some() || pending_rumble.is_some() {
-            let led = pending_led.unwrap_or(p.info.led);
-            let (w, s) = pending_rumble.unwrap_or((0.0, 0.0));
-            let gain = prof.rumble_intensity.clamp(0.0, 1.0);
-            if let Err(e) = write_output_report(
-                &p.device,
-                p.info.kind,
-                p.info.connection,
-                led,
-                (w * gain, s * gain),
-            ) {
-                log::warn!("output report failed: {e}");
-            } else {
-                p.info.led = led;
-                inner.led_state.write().insert(p.info.id.clone(), led);
-            }
-        }
-
-        // ---- telemetry --------------------------------------------------------
-        let dt_us = t0.elapsed().as_micros() as u32;
-        snap.latency_us = dt_us;
-        latency_acc += dt_us as u64;
-        latency_n += 1;
-        inner.peak_latency_us.fetch_max(dt_us, Ordering::Relaxed);
-        inner.polls.fetch_add(1, Ordering::Relaxed);
-        hz_count += 1;
-        if hz_window.elapsed() >= Duration::from_millis(500) {
+        if read_any && hz_window.elapsed() >= Duration::from_millis(500) {
             let hz = (hz_count as f32 / hz_window.elapsed().as_secs_f32()) as u32;
             inner.poll_hz.store(hz, Ordering::Relaxed);
             inner
@@ -1284,26 +1285,26 @@ where
             hz_window = Instant::now();
         }
 
-        *inner.last_snapshot.write() = snap.clone();
-
         // ---- 60 Hz UI stream ----------------------------------------------------
         if last_emit.elapsed() >= emit_period {
             last_emit = Instant::now();
-            snap.timestamp_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            emit(snap);
+            if let Some(mut snap) = active_snap {
+                snap.timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                emit(snap);
+            }
         }
 
-        if !prof.turbo_polling {
-            std::thread::sleep(Duration::from_micros(500));
-        }
+        std::thread::yield_now();
     }
 
-    // Graceful shutdown: neutralise the virtual pad so games don't see drift.
-    if let Some(v) = virt.as_mut() {
-        let _ = v.submit(&InputSnapshot::default());
+    // Graceful shutdown: neutralise all virtual pads so games don't see drift.
+    for v_slot in virt_pads.iter_mut() {
+        if let Some(v) = v_slot.as_mut() {
+            let _ = v.submit(&InputSnapshot::default());
+        }
     }
     Ok(())
 }

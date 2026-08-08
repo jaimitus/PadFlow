@@ -115,7 +115,7 @@ export default function App() {
       if (native) {
         pollTimer = setInterval(async () => {
           try {
-            const s = await padflow.getLastSnapshot();
+            const s = await padflow.getLastSnapshot(selectedId ?? undefined);
             if (s && (s.padId || s.timestampMs > 0)) {
               snapRef.current = s;
             }
@@ -369,7 +369,10 @@ export default function App() {
                       selected={pad.id === selected?.id}
                       liveBattery={pad.id === snapRef.current.padId ? battery.level : pad.battery}
                       charging={pad.id === snapRef.current.padId ? battery.charging : pad.charging}
-                      onSelect={() => setSelectedId(pad.id)}
+                      onSelect={() => {
+                        setSelectedId(pad.id);
+                        padflow.selectGamepad(pad.id).catch(() => undefined);
+                      }}
                       onLed={(rgb) => setLed(pad.id, rgb)}
                       onRumble={() => {
                         padflow.testRumble(0.6, 0.9).catch(() => undefined);

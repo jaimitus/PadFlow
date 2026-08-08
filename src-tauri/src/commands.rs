@@ -162,11 +162,17 @@ pub fn get_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, Str
     })
 }
 
-/// Pulls the latest frame without waiting for the 60 Hz event (used by the
-/// canvas when the window regains focus).
+/// Selects the active gamepad for UI stream and calibration canvas.
 #[tauri::command]
-pub fn get_last_snapshot(state: State<'_, AppState>) -> Result<InputSnapshot, String> {
-    Ok(state.engine.snapshot())
+pub fn select_gamepad(pad_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.set_active_pad(&pad_id);
+    Ok(())
+}
+
+/// Pulls the latest frame for a specific pad (or active pad).
+#[tauri::command]
+pub fn get_last_snapshot(pad_id: Option<String>, state: State<'_, AppState>) -> Result<InputSnapshot, String> {
+    Ok(state.engine.snapshot_for(pad_id.as_deref()))
 }
 
 /// Fires a haptic pulse so the user can verify rumble intensity.

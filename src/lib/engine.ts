@@ -376,10 +376,16 @@ export const padflow = {
     return web.onStats(cb);
   },
 
-  async getLastSnapshot(): Promise<InputSnapshot> {
-    if (isNative()) return tauriInvoke<InputSnapshot>("get_last_snapshot");
+  async selectGamepad(padId: string): Promise<void> {
+    if (isNative()) {
+      await tauriInvoke("select_gamepad", { padId });
+    }
+  },
+
+  async getLastSnapshot(padId?: string): Promise<InputSnapshot> {
+    if (isNative()) return tauriInvoke<InputSnapshot>("get_last_snapshot", { padId });
     return {
-      padId: "",
+      padId: padId ?? "",
       rawLeft: [0, 0],
       rawRight: [0, 0],
       left: [0, 0],
