@@ -232,7 +232,6 @@ pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Res
     for dev in devices {
         let _ = hidhide::hide_device(&dev.path);
     }
-    let _ = hidhide::cloak_all_gaming_controllers();
     let _ = hidhide::set_active(true);
     let status = hidhide::get_status();
     let _ = app.emit("padflow-hidhide-updated", status.clone());
