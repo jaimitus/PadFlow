@@ -318,6 +318,7 @@ pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
         return Err("invalid URL scheme".into());
     }
     use tauri_plugin_shell::ShellExt;
+    #[allow(deprecated)]
     app.shell().open(url, None).map_err(|e| e.to_string())
 }
 

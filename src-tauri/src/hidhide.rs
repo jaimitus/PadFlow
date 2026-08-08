@@ -117,13 +117,42 @@ mod win {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-    use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-    use windows::Win32::System::IO::DeviceIoControl;
+
+    type HANDLE = *mut std::ffi::c_void;
+    const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
+
+    const GENERIC_READ: u32 = 0x80000000;
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut std::ffi::c_void,
+        ) -> HANDLE;
+
+        fn CloseHandle(hObject: HANDLE) -> i32;
+
+        fn DeviceIoControl(
+            hDevice: HANDLE,
+            dwIoControlCode: u32,
+            lpInBuffer: *const std::ffi::c_void,
+            nInBufferSize: u32,
+            lpOutBuffer: *mut std::ffi::c_void,
+            nOutBufferSize: u32,
+            lpBytesReturned: *mut u32,
+            lpOverlapped: *mut std::ffi::c_void,
+        ) -> i32;
+    }
 
     pub struct HidHideHandle(HANDLE);
 
@@ -136,16 +165,16 @@ mod win {
 
             unsafe {
                 let handle = CreateFileW(
-                    PCWSTR(path_wide.as_ptr()),
-                    FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                    path_wide.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    None,
+                    std::ptr::null_mut(),
                     OPEN_EXISTING,
                     FILE_ATTRIBUTE_NORMAL,
-                    None,
+                    std::ptr::null_mut(),
                 );
 
-                if handle == INVALID_HANDLE_VALUE {
+                if handle == INVALID_HANDLE_VALUE || handle.is_null() {
                     return Err("HidHide driver not installed or control device not accessible".into());
                 }
 
@@ -160,15 +189,15 @@ mod win {
                 DeviceIoControl(
                     self.0,
                     IOCTL_GET_ACTIVE,
-                    None,
+                    std::ptr::null(),
                     0,
-                    Some(&mut active_byte as *mut _ as *mut _),
+                    &mut active_byte as *mut _ as *mut _,
                     1,
-                    Some(&mut returned),
-                    None,
+                    &mut returned,
+                    std::ptr::null_mut(),
                 )
             };
-            if ok.is_ok() {
+            if ok != 0 {
                 Ok(active_byte != 0)
             } else {
                 Err("Failed to get HidHide active status".into())
@@ -182,15 +211,19 @@ mod win {
                 DeviceIoControl(
                     self.0,
                     IOCTL_SET_ACTIVE,
-                    Some(&active_byte as *const _ as *const _),
+                    &active_byte as *const _ as *const _,
                     1,
-                    None,
+                    std::ptr::null_mut(),
                     0,
-                    Some(&mut returned),
-                    None,
+                    &mut returned,
+                    std::ptr::null_mut(),
                 )
             };
-            ok.map_err(|e| format!("Failed to set HidHide active status: {e}"))
+            if ok != 0 {
+                Ok(())
+            } else {
+                Err("Failed to set HidHide active status".into())
+            }
         }
 
         pub fn get_blacklist(&self) -> Result<Vec<String>, String> {
@@ -213,7 +246,16 @@ mod win {
             let mut needed = 0u32;
             // First probe for required size
             unsafe {
-                let _ = DeviceIoControl(self.0, ioctl, None, 0, None, 0, Some(&mut needed), None);
+                let _ = DeviceIoControl(
+                    self.0,
+                    ioctl,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut needed,
+                    std::ptr::null_mut(),
+                );
             }
 
             if needed == 0 {
@@ -228,16 +270,16 @@ mod win {
                 DeviceIoControl(
                     self.0,
                     ioctl,
-                    None,
+                    std::ptr::null(),
                     0,
-                    Some(buffer.as_mut_ptr() as *mut _),
+                    buffer.as_mut_ptr() as *mut _,
                     (buffer.len() * 2) as u32,
-                    Some(&mut returned),
-                    None,
+                    &mut returned,
+                    std::ptr::null_mut(),
                 )
             };
 
-            if ok.is_err() {
+            if ok == 0 {
                 return Err(format!("DeviceIoControl failed for IOCTL {ioctl}"));
             }
 
@@ -251,15 +293,19 @@ mod win {
                 DeviceIoControl(
                     self.0,
                     ioctl,
-                    Some(multi_sz.as_ptr() as *const _),
+                    multi_sz.as_ptr() as *const _,
                     (multi_sz.len() * 2) as u32,
-                    None,
+                    std::ptr::null_mut(),
                     0,
-                    Some(&mut returned),
-                    None,
+                    &mut returned,
+                    std::ptr::null_mut(),
                 )
             };
-            ok.map_err(|e| format!("DeviceIoControl failed to update list for IOCTL {ioctl}: {e}"))
+            if ok != 0 {
+                Ok(())
+            } else {
+                Err(format!("DeviceIoControl failed to update list for IOCTL {ioctl}"))
+            }
         }
     }
 
