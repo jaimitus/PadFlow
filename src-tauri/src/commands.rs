@@ -171,8 +171,10 @@ pub fn start_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Resul
 #[tauri::command]
 pub fn stop_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result<EngineStats, String> {
     state.engine.stop();
+    let _ = hidhide::uncloak_all_controllers();
     let stats = state.engine.stats();
     let _ = app.emit("padflow-engine-stopped", stats.clone());
+    let _ = app.emit("padflow-hidhide-updated", hidhide::get_status());
     Ok(stats)
 }
 

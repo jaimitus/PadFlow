@@ -110,6 +110,7 @@ pub fn run() {
                     }
                     "quit" => {
                         tray_engine.stop();
+                        let _ = hidhide::uncloak_all_controllers();
                         std::process::exit(0);
                     }
                     _ => {}
