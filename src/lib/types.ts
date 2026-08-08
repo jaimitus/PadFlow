@@ -53,6 +53,9 @@ export interface StickProfileConfig {
   triggerLeft: TriggerProfile;
   triggerRight: TriggerProfile;
   flipTriggers: boolean;
+  touchpadMouse: boolean;
+  touchpadSensitivity: number;
+  batteryLedMode: boolean;
   rumbleIntensity: number;
   turboPolling: boolean;
 }

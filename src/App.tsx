@@ -685,7 +685,7 @@ export default function App() {
               />
 
               <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
-                <SectionTitle title="Engine" right={stats?.driver ?? "—"} />
+                <SectionTitle title="Engine & Extras" right={stats?.driver ?? "—"} />
                 <div className="grid grid-cols-2 gap-2">
                   <Stat label="Reports" value={(stats?.polls ?? 0).toLocaleString()} />
                   <Stat label="Peak lat." value={`${((stats?.peakLatencyUs ?? 0) / 1000).toFixed(2)} ms`} />
@@ -719,11 +719,12 @@ export default function App() {
                       }}
                     />
                   </div>
+
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-[11px] text-slate-300">Turbo polling</p>
+                      <p className="text-[11px] text-slate-300">Turbo polling (1 kHz)</p>
                       <p className="font-mono text-[9.5px] text-slate-600">
-                        pins the HID thread at 1 kHz (time-critical)
+                        pins HID loop to sub-millisecond thread priority
                       </p>
                     </div>
                     <button
@@ -737,6 +738,83 @@ export default function App() {
                         className={cn(
                           "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
                           profile.turboPolling ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-white/6 pt-2">
+                    <div>
+                      <p className="text-[11px] text-slate-300">Touchpad as Virtual Mouse</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        1-finger move/click · 2-finger scroll
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setProfile((p) => ({ ...p, touchpadMouse: !p.touchpadMouse }))}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.touchpadMouse ? "bg-cyan-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.touchpadMouse ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  {profile.touchpadMouse && (
+                    <div className="pl-1">
+                      <div className="mb-1 flex items-baseline justify-between font-mono text-[9.5px]">
+                        <span className="text-slate-400">Touchpad Sensitivity</span>
+                        <span className="text-slate-200">{profile.touchpadSensitivity.toFixed(2)}×</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.25}
+                        max={3.0}
+                        step={0.05}
+                        value={profile.touchpadSensitivity}
+                        onChange={(e) =>
+                          setProfile((p) => ({
+                            ...p,
+                            touchpadSensitivity: parseFloat(e.target.value),
+                          }))
+                        }
+                        className="pf-range h-1.5 w-full cursor-pointer appearance-none rounded-full"
+                        style={{
+                          background: `linear-gradient(90deg, rgb(34,211,238) 0%, rgb(34,211,238) ${
+                            ((profile.touchpadSensitivity - 0.25) / 2.75) * 100
+                          }%, rgba(255,255,255,0.09) ${
+                            ((profile.touchpadSensitivity - 0.25) / 2.75) * 100
+                          }%, rgba(255,255,255,0.09) 100%)`,
+                          ["--pf-accent" as string]: "rgb(34,211,238)",
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between border-t border-white/6 pt-2">
+                    <div>
+                      <p className="text-[11px] text-slate-300">Smart Battery Lightbar</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        dynamic LED color (Green &gt; 60%, Amber, Red)
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setProfile((p) => ({ ...p, batteryLedMode: !p.batteryLedMode }))}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.batteryLedMode ? "bg-emerald-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.batteryLedMode ? "left-[18px]" : "left-0.5",
                         )}
                       />
                     </button>

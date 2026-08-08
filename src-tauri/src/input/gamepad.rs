@@ -172,6 +172,9 @@ pub struct StickProfileConfig {
     pub trigger_left: TriggerProfile,
     pub trigger_right: TriggerProfile,
     pub flip_triggers: bool,
+    pub touchpad_mouse: bool,
+    pub touchpad_sensitivity: f32,
+    pub battery_led_mode: bool,
     pub rumble_intensity: f32,
     /// Extra polling aggressiveness: `true` pins the loop to 1000 Hz+.
     pub turbo_polling: bool,
@@ -185,6 +188,9 @@ impl Default for StickProfileConfig {
             trigger_left: TriggerProfile::default(),
             trigger_right: TriggerProfile::default(),
             flip_triggers: false,
+            touchpad_mouse: false,
+            touchpad_sensitivity: 1.0,
+            battery_led_mode: false,
             rumble_intensity: 1.0,
             turbo_polling: true,
         }
@@ -978,6 +984,41 @@ impl PadFlowEngine {
 }
 
 #[cfg(windows)]
+mod mouse_win {
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn mouse_event(dw_flags: u32, dx: i32, dy: i32, dw_data: u32, dw_extra_info: usize);
+    }
+
+    pub const MOUSEEVENTF_MOVE: u32 = 0x0001;
+    pub const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+    pub const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+    pub const MOUSEEVENTF_WHEEL: u32 = 0x0800;
+
+    #[inline(always)]
+    pub fn move_cursor(dx: i32, dy: i32) {
+        unsafe {
+            mouse_event(MOUSEEVENTF_MOVE, dx, dy, 0, 0);
+        }
+    }
+
+    #[inline(always)]
+    pub fn click_left(down: bool) {
+        unsafe {
+            let flags = if down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP };
+            mouse_event(flags, 0, 0, 0, 0);
+        }
+    }
+
+    #[inline(always)]
+    pub fn scroll(delta: i32) {
+        unsafe {
+            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta as u32, 0);
+        }
+    }
+}
+
+#[cfg(windows)]
 fn raise_thread_priority() {
     use windows::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
@@ -1083,6 +1124,9 @@ struct OpenPad {
     info: GamepadInfo,
     device: HidDevice,
     buf: [u8; 128],
+    last_touch: Option<[f32; 2]>,
+    last_scroll_y: Option<f32>,
+    mouse_clicked: bool,
 }
 
 fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<OpenPad>) {
@@ -1142,6 +1186,9 @@ fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<O
             info: target.clone(),
             device,
             buf: [0u8; 128],
+            last_touch: None,
+            last_scroll_y: None,
+            mouse_clicked: false,
         });
     }
 }
@@ -1268,6 +1315,59 @@ where
                 buttons_mask = (buttons_mask & !(buttons::L1 | buttons::R1)) | l2_bumper | r2_bumper;
             }
 
+            // ---- Touchpad virtual mouse simulation ------------------------
+            if prof.touchpad_mouse {
+                if raw.touch_count == 1 {
+                    let tx = raw.touch[0][0];
+                    let ty = raw.touch[0][1];
+                    if let Some([lx, ly]) = p.last_touch {
+                        let dx = (tx - lx) * 1920.0 * prof.touchpad_sensitivity;
+                        let dy = (ty - ly) * 1080.0 * prof.touchpad_sensitivity;
+                        if dx.abs() > 0.05 || dy.abs() > 0.05 {
+                            #[cfg(windows)]
+                            mouse_win::move_cursor(dx as i32, dy as i32);
+                        }
+                    }
+                    p.last_touch = Some([tx, ty]);
+                    p.last_scroll_y = None;
+
+                    let pad_click = (raw.buttons & buttons::TOUCHPAD) != 0;
+                    if pad_click && !p.mouse_clicked {
+                        p.mouse_clicked = true;
+                        #[cfg(windows)]
+                        mouse_win::click_left(true);
+                    } else if !pad_click && p.mouse_clicked {
+                        p.mouse_clicked = false;
+                        #[cfg(windows)]
+                        mouse_win::click_left(false);
+                    }
+                } else if raw.touch_count == 2 {
+                    let my = (raw.touch[0][1] + raw.touch[1][1]) * 0.5;
+                    if let Some(lmy) = p.last_scroll_y {
+                        let dy = (my - lmy) * 1200.0;
+                        if dy.abs() > 1.0 {
+                            #[cfg(windows)]
+                            mouse_win::scroll((-dy) as i32);
+                        }
+                    }
+                    p.last_scroll_y = Some(my);
+                    p.last_touch = None;
+                    if p.mouse_clicked {
+                        p.mouse_clicked = false;
+                        #[cfg(windows)]
+                        mouse_win::click_left(false);
+                    }
+                } else {
+                    p.last_touch = None;
+                    p.last_scroll_y = None;
+                    if p.mouse_clicked {
+                        p.mouse_clicked = false;
+                        #[cfg(windows)]
+                        mouse_win::click_left(false);
+                    }
+                }
+            }
+
             let mut touch_points = Vec::with_capacity(2);
             for t_idx in 0..raw.touch_count.min(2) as usize {
                 touch_points.push(raw.touch[t_idx]);
@@ -1318,8 +1418,21 @@ where
                 q.remove(&p.info.id)
             };
             let pending_rumble = inner.rumble_request.lock().take();
-            if pending_led.is_some() || pending_rumble.is_some() {
-                let led = pending_led.unwrap_or(p.info.led);
+
+            let target_led = if prof.battery_led_mode && raw.battery >= 0 {
+                if raw.battery > 60 {
+                    [0, 230, 80] // Emerald Green
+                } else if raw.battery > 25 {
+                    [240, 180, 0] // Amber
+                } else {
+                    [255, 30, 20] // Red
+                }
+            } else {
+                pending_led.unwrap_or(p.info.led)
+            };
+
+            if pending_led.is_some() || pending_rumble.is_some() || (prof.battery_led_mode && target_led != p.info.led) {
+                let led = target_led;
                 let (w, s) = pending_rumble.unwrap_or((0.0, 0.0));
                 let gain = prof.rumble_intensity.clamp(0.0, 1.0);
                 if let Err(e) = write_output_report(

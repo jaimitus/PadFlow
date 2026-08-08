@@ -88,6 +88,9 @@ pub fn update_stick_profile(
     if !(0.0..=1.0).contains(&profile_data.rumble_intensity) {
         return Err("rumble_intensity must be within 0.0..=1.0".into());
     }
+    if profile_data.touchpad_sensitivity < 0.1 || profile_data.touchpad_sensitivity > 5.0 {
+        return Err("touchpad_sensitivity must be within 0.1..=5.0".into());
+    }
     state.engine.set_profile_for(pad_id.as_deref(), profile_data);
     let _ = app.emit(
         "padflow-profile-updated",
