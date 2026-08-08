@@ -70,6 +70,14 @@ export interface InputSnapshot {
   timestampMs: number;
 }
 
+export interface HidHideStatus {
+  installed: boolean;
+  active: boolean;
+  whitelisted: boolean;
+  hiddenDevices: string[];
+  appPath: string;
+}
+
 export interface EngineStats {
   running: boolean;
   virtualPadOnline: boolean;
@@ -87,6 +95,7 @@ export interface EngineStatus {
   profile: StickProfileConfig;
   devices: GamepadInfo[];
   vigemInstalled: boolean;
+  hidhideStatus: HidHideStatus;
   version: string;
 }
 

@@ -10,6 +10,7 @@ import { padflow } from "./lib/engine";
 import type {
   EngineStats,
   GamepadInfo,
+  HidHideStatus,
   InputSnapshot,
   PadProfilePreset,
   StickAxisProfile,
@@ -40,12 +41,17 @@ const EMPTY_SNAPSHOT: InputSnapshot = {
 const ACCENT_L = "34,211,238";
 const ACCENT_R = "168,85,247";
 
+function normalizeDevicePath(path: string): string {
+  return path.replace(/[\\?#]/g, "_").toUpperCase();
+}
+
 export default function App() {
   const [devices, setDevices] = useState<GamepadInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [profile, setProfile] = useState<StickProfileConfig>(cloneProfile(DEFAULT_PROFILE));
   const [presetId, setPresetId] = useState<string | null>(null);
   const [stats, setStats] = useState<EngineStats | null>(null);
+  const [hidhideStatus, setHidhideStatus] = useState<HidHideStatus | null>(null);
   const [tab, setTab] = useState<"studio" | "source">("studio");
   const [toast, setToast] = useState<string | null>(null);
   const [battery, setBattery] = useState({ level: -1, charging: false });
@@ -64,6 +70,7 @@ export default function App() {
   useEffect(() => {
     let unInput: (() => void) | undefined;
     let unStats: (() => void) | undefined;
+    let unHidHide: (() => void) | undefined;
     let pollTimer: ReturnType<typeof setInterval> | undefined;
     let alive = true;
 
@@ -85,6 +92,9 @@ export default function App() {
         setStats(s);
         setRunning(s.running);
       });
+      unHidHide = await padflow.onHidHideUpdate((st) => {
+        setHidhideStatus(st);
+      });
 
       try {
         const s = await padflow.startEngine();
@@ -101,17 +111,26 @@ export default function App() {
         setRunning(true);
       }
 
+      padflow
+        .getHidHideStatus()
+        .then((st) => {
+          if (alive) setHidhideStatus(st);
+        })
+        .catch(() => undefined);
+
       if (native) {
         padflow
           .getEngineStatus()
           .then((st) => {
-            if (alive) setVigemInstalled(st.vigemInstalled);
+            if (alive) {
+              setVigemInstalled(st.vigemInstalled);
+              if (st.hidhideStatus) setHidhideStatus(st.hidhideStatus);
+            }
           })
           .catch(() => undefined);
       }
 
       // Polling fallback: directly pull last snapshot via IPC at 60Hz.
-      // This guarantees live input even if Tauri event delivery is broken.
       if (native) {
         pollTimer = setInterval(async () => {
           try {
@@ -130,9 +149,10 @@ export default function App() {
       alive = false;
       unInput?.();
       unStats?.();
+      unHidHide?.();
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [native, notify]);
+  }, [native, notify, selectedId]);
 
   // ---- slow UI refreshes (battery / device list) ---------------------------
   useEffect(() => {
@@ -221,6 +241,61 @@ export default function App() {
     }
   }, [running, notify]);
 
+  const isDeviceCloaked = useCallback(
+    (devicePath: string) => {
+      if (!hidhideStatus?.active || !hidhideStatus.hiddenDevices.length) return false;
+      const target = normalizeDevicePath(devicePath);
+      return hidhideStatus.hiddenDevices.some((d) => {
+        const norm = normalizeDevicePath(d);
+        return norm.includes(target) || target.includes(norm) || d.toLowerCase() === devicePath.toLowerCase();
+      });
+    },
+    [hidhideStatus],
+  );
+
+  const toggleDeviceCloak = useCallback(
+    async (devicePath: string) => {
+      const cloaked = isDeviceCloaked(devicePath);
+      try {
+        const st = await padflow.toggleDeviceHide(devicePath, !cloaked);
+        setHidhideStatus(st);
+        notify(
+          !cloaked
+            ? "🛡️ Device cloaked! Physical gamepad hidden from games (Anti-Double Input active)."
+            : "Device uncloaked. Physical gamepad now visible to other apps.",
+        );
+      } catch (e) {
+        notify(`HidHide error: ${String(e)}`);
+      }
+    },
+    [isDeviceCloaked, notify],
+  );
+
+  const autoCloakAll = useCallback(async () => {
+    try {
+      const st = await padflow.autoCloakControllers();
+      setHidhideStatus(st);
+      notify("🛡️ All detected controllers cloaked! Anti-double-input protection active.");
+    } catch (e) {
+      notify(`Auto-cloak failed: ${String(e)}`);
+    }
+  }, [notify]);
+
+  const toggleHidHideActive = useCallback(async () => {
+    if (!hidhideStatus) return;
+    try {
+      const st = await padflow.setHidHideActive(!hidhideStatus.active);
+      setHidhideStatus(st);
+      notify(
+        !hidhideStatus.active
+          ? "HidHide protection enabled"
+          : "HidHide protection disabled · physical gamepads uncloaked",
+      );
+    } catch (e) {
+      notify(`HidHide toggle failed: ${String(e)}`);
+    }
+  }, [hidhideStatus, notify]);
+
   const getLeft = useCallback(
     () => ({ raw: snapRef.current.rawLeft, shaped: snapRef.current.left }),
     [],
@@ -237,6 +312,7 @@ export default function App() {
   );
 
   const latencyMs = stats ? stats.avgLatencyUs / 1000 : 0;
+  const isCloakingActive = hidhideStatus?.installed && hidhideStatus.active && hidhideStatus.hiddenDevices.length > 0;
 
   return (
     <div className="relative min-h-screen bg-[#05070d] text-slate-200">
@@ -254,10 +330,10 @@ export default function App() {
             />
             <div>
               <h1 className="text-lg font-bold leading-tight tracking-tight text-white">
-                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v1.0.0</span>
+                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v1.1.0</span>
               </h1>
               <p className="font-mono text-[10px] text-slate-500">
-                DualShock 4 / DualSense → XInput bridge · ViGEmBus · &lt;15 MB RAM
+                DualShock 4 / DualSense → XInput bridge · ViGEmBus · HidHide Shield · &lt;15 MB RAM
               </p>
             </div>
           </div>
@@ -277,6 +353,17 @@ export default function App() {
               label="VIRTUAL PAD"
               value={stats?.virtualPadOnline ? "X360 ONLINE" : "OFFLINE"}
               tone={stats?.virtualPadOnline ? "good" : "bad"}
+            />
+            <Chip
+              label="HIDHIDE"
+              value={
+                isCloakingActive
+                  ? "CLOAKED 🛡️"
+                  : hidhideStatus?.installed
+                    ? "SHIELD READY"
+                    : "UNPROTECTED"
+              }
+              tone={isCloakingActive ? "good" : hidhideStatus?.installed ? "idle" : "warn"}
             />
             <Chip label="MODE" value={native ? "NATIVE HID" : "WEB PREVIEW"} tone={native ? "good" : "warn"} />
 
@@ -315,6 +402,7 @@ export default function App() {
           </div>
         </header>
 
+        {/* ViGEmBus driver warning banner */}
         {native && !vigemInstalled && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-amber-200 shadow-lg backdrop-blur">
             <div className="flex items-center gap-2.5">
@@ -350,6 +438,41 @@ export default function App() {
           </div>
         )}
 
+        {/* HidHide driver installation recommendation banner */}
+        {native && hidhideStatus && !hidhideStatus.installed && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-emerald-200 shadow-lg backdrop-blur">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-400/20 text-emerald-300 font-bold">
+                🛡️
+              </span>
+              <div>
+                <p className="text-xs font-semibold text-emerald-100">
+                  HidHide Driver Recommended — Prevent Double-Input Conflicts
+                </p>
+                <p className="font-mono text-[10px] text-emerald-300/80">
+                  Hides physical DirectInput controllers from games so only the virtual Xbox pad is detected.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={async () => {
+                notify("Launching HidHide installer wizard (accept Administrator prompt)...");
+                try {
+                  const res = await padflow.installHidHideDriver();
+                  notify(res);
+                  const st = await padflow.getHidHideStatus();
+                  setHidhideStatus(st);
+                } catch (e) {
+                  notify(`Install error: ${String(e)}`);
+                }
+              }}
+              className="flex items-center gap-2 rounded-xl bg-emerald-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-emerald-300 hover:shadow-md hover:shadow-emerald-400/20"
+            >
+              🛡️ INSTALL HIDHIDE DRIVER
+            </button>
+          </div>
+        )}
+
         {tab === "source" ? (
           <SourceExplorer />
         ) : (
@@ -369,6 +492,8 @@ export default function App() {
                       selected={pad.id === selected?.id}
                       liveBattery={pad.id === snapRef.current.padId ? battery.level : pad.battery}
                       charging={pad.id === snapRef.current.padId ? battery.charging : pad.charging}
+                      isCloaked={isDeviceCloaked(pad.path)}
+                      hidhideInstalled={hidhideStatus?.installed ?? false}
                       onSelect={() => {
                         setSelectedId(pad.id);
                         padflow.selectGamepad(pad.id).catch(() => undefined);
@@ -378,6 +503,7 @@ export default function App() {
                         padflow.testRumble(0.6, 0.9).catch(() => undefined);
                         notify("Haptic pulse sent (450 ms)");
                       }}
+                      onToggleCloak={() => toggleDeviceCloak(pad.path)}
                     />
                   ))}
                   {devices.length === 0 && (
@@ -386,6 +512,53 @@ export default function App() {
                       <p className="mt-1 font-mono text-[10px] text-slate-600">
                         Connect a DualShock 4 / DualSense over USB or Bluetooth
                       </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* HidHide Shield Panel */}
+              <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
+                <SectionTitle
+                  title="Anti-Double Input Shield"
+                  right={hidhideStatus?.installed ? (hidhideStatus.active ? "ACTIVE" : "PAUSED") : "NOT INSTALLED"}
+                />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] text-slate-200">Cloak Device Firewall (HidHide)</p>
+                      <p className="font-mono text-[9.5px] text-slate-500">
+                        Hides physical Sony pad so games only read virtual XInput
+                      </p>
+                    </div>
+                    <button
+                      disabled={!hidhideStatus?.installed}
+                      onClick={toggleHidHideActive}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors disabled:opacity-40",
+                        hidhideStatus?.active ? "bg-emerald-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          hidhideStatus?.active ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  {hidhideStatus?.installed && (
+                    <div className="flex items-center justify-between pt-1 text-xs">
+                      <span className="font-mono text-[10px] text-slate-400">
+                        Hidden instances: <span className="text-emerald-300 font-bold">{hidhideStatus.hiddenDevices.length}</span>
+                      </span>
+                      <button
+                        onClick={autoCloakAll}
+                        className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 font-mono text-[10px] text-emerald-300 hover:bg-emerald-400/20 transition-colors"
+                      >
+                        🛡️ CLOAK ALL CONTROLLERS
+                      </button>
                     </div>
                   )}
                 </div>
@@ -511,7 +684,7 @@ export default function App() {
 
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4 font-mono text-[10px] text-slate-600">
           <span>
-            PadFlow · open source ·{" "}
+            PadFlow v1.1.0 · open source ·{" "}
             <button
               type="button"
               onClick={() => padflow.openUrl("https://github.com/jaimitus/PadFlow")}
@@ -519,7 +692,7 @@ export default function App() {
             >
               github.com/jaimitus/PadFlow
             </button>
-            {" "}· Windows 10 / 11 · requires ViGEmBus 1.22+
+            {" "}· Windows 10 / 11 · ViGEmBus 1.22+ · HidHide Support
           </span>
           <span>
             active pad:{" "}

@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::hidhide::{self, HidHideStatus};
 use crate::input::gamepad::{
     apply_curve, shape_stick, CurveKind, EngineStats, GamepadInfo, InputSnapshot,
     StickAxisProfile, StickProfileConfig,
@@ -25,6 +26,7 @@ pub struct EngineStatus {
     pub profile: StickProfileConfig,
     pub devices: Vec<GamepadInfo>,
     pub vigem_installed: bool,
+    pub hidhide_status: HidHideStatus,
     pub version: String,
 }
 
@@ -158,8 +160,61 @@ pub fn get_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, Str
         profile: state.engine.profile(),
         devices,
         vigem_installed: vigem_client::Client::connect().is_ok(),
+        hidhide_status: hidhide::get_status(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+/// Returns current HidHide device firewall status.
+#[tauri::command]
+pub fn get_hidhide_status() -> Result<HidHideStatus, String> {
+    Ok(hidhide::get_status())
+}
+
+/// Enables or disables HidHide device hiding globally.
+#[tauri::command]
+pub fn set_hidhide_active(active: bool, app: AppHandle) -> Result<HidHideStatus, String> {
+    hidhide::set_active(active)?;
+    let status = hidhide::get_status();
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Hides or unhides a physical controller from non-whitelisted applications.
+#[tauri::command]
+pub fn toggle_device_hide(
+    device_path: String,
+    hide: bool,
+    app: AppHandle,
+) -> Result<HidHideStatus, String> {
+    if hide {
+        hidhide::hide_device(&device_path)?;
+    } else {
+        hidhide::unhide_device(&device_path)?;
+    }
+    let status = hidhide::get_status();
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Cloaks all currently connected PlayStation / HID controllers automatically.
+#[tauri::command]
+pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Result<HidHideStatus, String> {
+    let devices = state.engine.devices();
+    let _ = hidhide::auto_whitelist_current_process();
+    for dev in devices {
+        let _ = hidhide::hide_device(&dev.path);
+    }
+    let _ = hidhide::set_active(true);
+    let status = hidhide::get_status();
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Launches the HidHide driver installer with UAC Administrator privileges.
+#[tauri::command]
+pub fn install_hidhide_driver(app: AppHandle) -> Result<String, String> {
+    hidhide::install_hidhide_driver(&app)
 }
 
 /// Selects the active gamepad for UI stream and calibration canvas.

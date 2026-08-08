@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import cargoToml from "../../src-tauri/Cargo.toml?raw";
 import gamepadRs from "../../src-tauri/src/input/gamepad.rs?raw";
+import hidhideRs from "../../src-tauri/src/hidhide.rs?raw";
 import commandsRs from "../../src-tauri/src/commands.rs?raw";
 import libRs from "../../src-tauri/src/lib.rs?raw";
 import mainRs from "../../src-tauri/src/main.rs?raw";
@@ -12,7 +13,13 @@ const FILES: { path: string; lang: string; body: string; note: string }[] = [
     path: "src-tauri/Cargo.toml",
     lang: "toml",
     body: cargoToml,
-    note: "Locked dependency set — tauri 2 (tray-icon), vigem-client, hidapi, gilrs, tokio.",
+    note: "Locked dependency set — tauri 2 (tray-icon), vigem-client, hidapi, tokio.",
+  },
+  {
+    path: "src-tauri/src/hidhide.rs",
+    lang: "rust",
+    body: hidhideRs,
+    note: "HidHide device firewall client (IOCTL), process auto-whitelisting & anti-double-input device cloaking.",
   },
   {
     path: "src-tauri/src/input/gamepad.rs",

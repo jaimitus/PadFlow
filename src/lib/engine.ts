@@ -4,6 +4,7 @@ import type {
   EngineStats,
   EngineStatus,
   GamepadInfo,
+  HidHideStatus,
   InputSnapshot,
   PadKind,
   StickProfileConfig,
@@ -83,6 +84,7 @@ class WebEngine {
   private profile: StickProfileConfig = DEFAULT_PROFILE;
   private inputCbs = new Set<(s: InputSnapshot) => void>();
   private statsCbs = new Set<(s: EngineStats) => void>();
+  private hidhideCbs = new Set<(s: HidHideStatus) => void>();
   private raf = 0;
   private running = false;
   private polls = 0;
@@ -92,6 +94,8 @@ class WebEngine {
   private led: Record<string, [number, number, number]> = {};
   private rumbleUntil = 0;
   private peak = 0;
+  private hidhideActive = true;
+  private hiddenDevices: string[] = ["HID\\VID_054C&PID_0CE6&COL01\\7&3084128&0&0000"];
 
   devices(): GamepadInfo[] {
     const out: GamepadInfo[] = [];
@@ -180,6 +184,37 @@ class WebEngine {
     };
   }
 
+  hidhideStatus(): HidHideStatus {
+    return {
+      installed: true,
+      active: this.hidhideActive,
+      whitelisted: true,
+      hiddenDevices: this.hiddenDevices,
+      appPath: "C:\\Program Files\\PadFlow\\PadFlow.exe",
+    };
+  }
+
+  setHidHideActive(active: boolean): HidHideStatus {
+    this.hidhideActive = active;
+    const st = this.hidhideStatus();
+    this.hidhideCbs.forEach((cb) => cb(st));
+    return st;
+  }
+
+  toggleDeviceHide(path: string, hide: boolean): HidHideStatus {
+    const norm = path.replace(/[\\?#]/g, "_").toUpperCase();
+    if (hide) {
+      if (!this.hiddenDevices.includes(norm)) {
+        this.hiddenDevices.push(norm);
+      }
+    } else {
+      this.hiddenDevices = this.hiddenDevices.filter((p) => p !== norm && p !== path);
+    }
+    const st = this.hidhideStatus();
+    this.hidhideCbs.forEach((cb) => cb(st));
+    return st;
+  }
+
   onInput(cb: (s: InputSnapshot) => void): Unlisten {
     this.inputCbs.add(cb);
     return () => this.inputCbs.delete(cb);
@@ -188,6 +223,11 @@ class WebEngine {
   onStats(cb: (s: EngineStats) => void): Unlisten {
     this.statsCbs.add(cb);
     return () => this.statsCbs.delete(cb);
+  }
+
+  onHidHide(cb: (s: HidHideStatus) => void): Unlisten {
+    this.hidhideCbs.add(cb);
+    return () => this.hidhideCbs.delete(cb);
   }
 
   start() {
@@ -376,6 +416,19 @@ export const padflow = {
     return web.onStats(cb);
   },
 
+  async onHidHideUpdate(cb: (s: HidHideStatus) => void): Promise<Unlisten> {
+    if (isNative()) {
+      try {
+        return await tauriListen<HidHideStatus>("padflow-hidhide-updated", (e) => {
+          cb(e.payload);
+        });
+      } catch (err) {
+        console.error("Failed to subscribe to padflow-hidhide-updated:", err);
+      }
+    }
+    return web.onHidHide(cb);
+  },
+
   async selectGamepad(padId: string): Promise<void> {
     if (isNative()) {
       await tauriInvoke("select_gamepad", { padId });
@@ -420,6 +473,33 @@ export const padflow = {
     throw new Error("ViGEmBus installation is only available in desktop native mode");
   },
 
+  async getHidHideStatus(): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("get_hidhide_status");
+    return web.hidhideStatus();
+  },
+
+  async setHidHideActive(active: boolean): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("set_hidhide_active", { active });
+    return web.setHidHideActive(active);
+  },
+
+  async toggleDeviceHide(devicePath: string, hide: boolean): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("toggle_device_hide", { devicePath, hide });
+    return web.toggleDeviceHide(devicePath, hide);
+  },
+
+  async autoCloakControllers(): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("auto_cloak_controllers");
+    return web.hidhideStatus();
+  },
+
+  async installHidHideDriver(): Promise<string> {
+    if (isNative()) {
+      return tauriInvoke<string>("install_hidhide_driver");
+    }
+    throw new Error("HidHide installation is only available in desktop native mode");
+  },
+
   async getEngineStatus(): Promise<EngineStatus> {
     if (isNative()) return tauriInvoke<EngineStatus>("get_engine_status");
     return {
@@ -427,7 +507,8 @@ export const padflow = {
       profile: DEFAULT_PROFILE,
       devices: [],
       vigemInstalled: true,
-      version: "1.0.0",
+      hidhideStatus: web.hidhideStatus(),
+      version: "1.1.0",
     };
   },
 };

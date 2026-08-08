@@ -7,6 +7,7 @@
 //! * auto-start the input engine as soon as the webview is ready.
 
 pub mod commands;
+pub mod hidhide;
 pub mod input;
 
 use std::sync::Arc;
@@ -58,6 +59,11 @@ pub fn run() {
             commands::toggle_window,
             commands::open_url,
             commands::install_vigem_driver,
+            commands::get_hidhide_status,
+            commands::set_hidhide_active,
+            commands::toggle_device_hide,
+            commands::auto_cloak_controllers,
+            commands::install_hidhide_driver,
         ])
         .setup(move |app| {
             // ---- tray -----------------------------------------------------
@@ -157,10 +163,11 @@ pub fn run() {
                 }
             });
 
-            // ---- auto-start the realtime engine ---------------------------
+            // ---- auto-start the realtime engine & HidHide whitelist ------
             let boot = app.handle().clone();
             let boot_engine = Arc::new(engine.clone());
             tauri::async_runtime::spawn(async move {
+                let _ = hidhide::auto_whitelist_current_process();
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                 let _ = boot_engine.rescan();
                 let sink = boot.clone();
