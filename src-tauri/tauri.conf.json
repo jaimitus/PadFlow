@@ -32,7 +32,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "resources": ["resources/ViGEmBus_Setup.exe"],
+    "resources": ["resources/*"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
     "windows": {
       "nsis": {

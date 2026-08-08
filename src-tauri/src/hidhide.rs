@@ -463,45 +463,130 @@ pub fn set_active(active: bool) -> Result<(), String> {
 }
 
 pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> {
+    use std::path::PathBuf;
     use tauri::Manager;
-    let temp_msi = std::env::temp_dir().join("HidHideMSI.msi");
 
-    let res_msi = app
-        .path()
-        .resource_dir()
-        .map(|p| p.join("resources").join("HidHideMSI.msi"))
-        .ok();
+    let candidate_names = [
+        "HidHide_Setup.exe",
+        "HidHide_1.5.230_x64.exe",
+        "HidHideMSI.msi",
+        "HidHide.exe",
+    ];
 
-    let target_path = if let Some(ref r) = res_msi {
-        if r.exists() {
-            r.clone()
-        } else {
-            temp_msi.clone()
+    let mut found_installer: Option<PathBuf> = None;
+
+    // 1. Search in Tauri app resource directory
+    if let Ok(res_dir) = app.path().resource_dir() {
+        for name in &candidate_names {
+            let p1 = res_dir.join("resources").join(name);
+            let p2 = res_dir.join(name);
+            if p1.exists() {
+                found_installer = Some(p1);
+                break;
+            }
+            if p2.exists() {
+                found_installer = Some(p2);
+                break;
+            }
         }
-    } else {
-        temp_msi.clone()
-    };
+    }
 
-    if !target_path.exists() {
+    // 2. Search alongside current executable or working directory
+    if found_installer.is_none() {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(parent) = exe_path.parent() {
+                for name in &candidate_names {
+                    let p1 = parent.join("resources").join(name);
+                    let p2 = parent.join(name);
+                    let p3 = parent.join("src-tauri").join("resources").join(name);
+                    if p1.exists() {
+                        found_installer = Some(p1);
+                        break;
+                    }
+                    if p2.exists() {
+                        found_installer = Some(p2);
+                        break;
+                    }
+                    if p3.exists() {
+                        found_installer = Some(p3);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Search in current working directory / src-tauri/resources
+    if found_installer.is_none() {
+        for name in &candidate_names {
+            let p1 = PathBuf::from("src-tauri").join("resources").join(name);
+            let p2 = PathBuf::from("resources").join(name);
+            let p3 = PathBuf::from(name);
+            if p1.exists() {
+                found_installer = Some(p1);
+                break;
+            }
+            if p2.exists() {
+                found_installer = Some(p2);
+                break;
+            }
+            if p3.exists() {
+                found_installer = Some(p3);
+                break;
+            }
+        }
+    }
+
+    // 4. If not found locally, download official installer via PowerShell
+    let target_path = if let Some(local_path) = found_installer {
+        local_path
+    } else {
+        let temp_exe = std::env::temp_dir().join("HidHide_Setup.exe");
         let dl_cmd = format!(
-            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('https://github.com/nefarius/HidHide/releases/download/v1.5.230.0/HidHideMSI.msi', '{}')",
-            temp_msi.to_string_lossy().replace('\'', "''")
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; (New-Object System.Net.WebClient).DownloadFile('https://github.com/nefarius/HidHide/releases/download/v1.5.230.0/HidHide_1.5.230_x64.exe', '{}')",
+            temp_exe.to_string_lossy().replace('\'', "''")
         );
         let dl_status = std::process::Command::new("powershell")
             .args(["-Command", &dl_cmd])
             .status()
             .map_err(|e| format!("failed to download HidHide installer: {e}"))?;
-        if !dl_status.success() {
-            return Err("Failed to download HidHide installer from GitHub".into());
+
+        if !dl_status.success() || !temp_exe.exists() {
+            // Fallback download URL
+            let fallback_url = "https://github.com/nefarius/HidHide/releases/download/v1.5.212.0/HidHide_1.5.212_x64.exe";
+            let dl_fallback = format!(
+                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; (New-Object System.Net.WebClient).DownloadFile('{}', '{}')",
+                fallback_url,
+                temp_exe.to_string_lossy().replace('\'', "''")
+            );
+            let fallback_status = std::process::Command::new("powershell")
+                .args(["-Command", &dl_fallback])
+                .status()
+                .map_err(|e| format!("failed to download HidHide installer: {e}"))?;
+
+            if !fallback_status.success() || !temp_exe.exists() {
+                return Err("Failed to download HidHide installer from GitHub releases. Please check your internet connection or place HidHide_Setup.exe in src-tauri/resources/".into());
+            }
         }
-    }
+        temp_exe
+    };
 
-    let msi_to_run = if target_path.exists() { target_path } else { temp_msi };
+    let is_msi = target_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase() == "msi")
+        .unwrap_or(false);
 
-    let install_cmd = format!(
-        "Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '{}', '/norestart' -Verb RunAs -Wait",
-        msi_to_run.to_string_lossy().replace('\'', "''")
-    );
+    let install_cmd = if is_msi {
+        format!(
+            "Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '{}', '/norestart' -Verb RunAs -Wait",
+            target_path.to_string_lossy().replace('\'', "''")
+        )
+    } else {
+        format!(
+            "Start-Process -FilePath '{}' -ArgumentList '/norestart' -Verb RunAs -Wait",
+            target_path.to_string_lossy().replace('\'', "''")
+        )
+    };
 
     let status = std::process::Command::new("powershell")
         .args(["-Command", &install_cmd])
@@ -517,7 +602,7 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
             let _ = auto_whitelist_current_process();
             Ok("HidHide driver installed successfully! Anti-double-input protection active.".into())
         } else {
-            Ok("HidHide installation finished. If shielding remains inactive, please restart Windows once to load filter driver.".into())
+            Ok("HidHide installation completed. If shielding remains inactive, please restart Windows once to load filter driver.".into())
         }
     } else {
         Err("HidHide installation was cancelled or denied Administrator permissions".into())
