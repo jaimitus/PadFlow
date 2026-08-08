@@ -36,8 +36,6 @@ pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2050, METHOD_
 pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2051, METHOD_BUFFERED, FILE_ANY_ACCESS);
 pub const IOCTL_GET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_ANY_ACCESS);
 pub const IOCTL_SET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_GET_WLINVERSE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2054, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_SET_WLINVERSE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2055, METHOD_BUFFERED, FILE_ANY_ACCESS);
 
 // ---------------------------------------------------------------------------
 // Path & Multi-SZ Helpers
@@ -65,7 +63,7 @@ pub fn normalize_device_instance_path(path: &str) -> String {
     clean.replace('#', "\\").to_uppercase()
 }
 
-/// Extracts multiple potential match variations for a controller (e.g. HID and base USB/Bluetooth).
+/// Extracts all variations of hardware IDs for a controller (composite collections and base container).
 pub fn extract_all_device_instance_ids(path: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let norm = normalize_device_instance_path(path);
@@ -73,7 +71,7 @@ pub fn extract_all_device_instance_ids(path: &str) -> Vec<String> {
         ids.push(norm.clone());
     }
 
-    // If it is a composite HID (e.g. HID\VID_054C&PID_0CE6&COL01\...), also add base HID without &COL
+    // Add base HID container if &COL is present
     if let Some(col_idx) = norm.find("&COL") {
         if let Some(next_slash) = norm[col_idx..].find('\\') {
             let base_hid = format!("{}{}", &norm[..col_idx], &norm[col_idx + next_slash..]);
@@ -83,7 +81,7 @@ pub fn extract_all_device_instance_ids(path: &str) -> Vec<String> {
         }
     }
 
-    // Also support USB prefix if HID is present
+    // Add USB prefix variation if HID is present
     if norm.starts_with(r"HID\VID_") {
         let usb_id = norm.replacen(r"HID\", r"USB\", 1);
         if !ids.contains(&usb_id) {
@@ -135,7 +133,7 @@ pub fn multi_sz_to_string_list(buffer: &[u16]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Windows Native Driver Communication (CLI + Registry + IOCTL)
+// Windows In-Process Native Engine (Zero Process Spawning, Zero Console Popups)
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
@@ -145,6 +143,9 @@ pub mod win {
     use std::os::windows::ffi::OsStrExt;
 
     type HANDLE = *mut std::ffi::c_void;
+    type HKEY = *mut std::ffi::c_void;
+
+    const HKEY_LOCAL_MACHINE: HKEY = 0x80000002usize as HKEY;
     const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
 
     const GENERIC_READ: u32 = 0x80000000;
@@ -154,6 +155,13 @@ pub mod win {
     const FILE_SHARE_DELETE: u32 = 0x00000004;
     const OPEN_EXISTING: u32 = 3;
     const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
+
+    const KEY_READ: u32 = 0x20019;
+    const KEY_WRITE: u32 = 0x20006;
+    const REG_DWORD: u32 = 4;
+    const REG_MULTI_SZ: u32 = 7;
+
+    const PARAMS_KEY: &str = r"SYSTEM\CurrentControlSet\Services\HidHide\Parameters";
 
     #[link(name = "kernel32")]
     extern "system" {
@@ -168,7 +176,6 @@ pub mod win {
         ) -> HANDLE;
 
         fn CloseHandle(hObject: HANDLE) -> i32;
-        fn GetLastError() -> u32;
         fn QueryDosDeviceW(lpDeviceName: *const u16, lpTargetPath: *mut u16, ucchMax: u32) -> u32;
 
         fn DeviceIoControl(
@@ -183,6 +190,53 @@ pub mod win {
         ) -> i32;
     }
 
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegOpenKeyExW(
+            hKey: HKEY,
+            lpSubKey: *const u16,
+            ulOptions: u32,
+            samDesired: u32,
+            phkResult: *mut HKEY,
+        ) -> i32;
+
+        fn RegCreateKeyExW(
+            hKey: HKEY,
+            lpSubKey: *const u16,
+            Reserved: u32,
+            lpClass: *mut u16,
+            dwOptions: u32,
+            samDesired: u32,
+            lpSecurityAttributes: *mut std::ffi::c_void,
+            phkResult: *mut HKEY,
+            lpdwDisposition: *mut u32,
+        ) -> i32;
+
+        fn RegQueryValueExW(
+            hKey: HKEY,
+            lpValueName: *const u16,
+            lpReserved: *mut u32,
+            lpType: *mut u32,
+            lpData: *mut u8,
+            lpcbData: *mut u32,
+        ) -> i32;
+
+        fn RegSetValueExW(
+            hKey: HKEY,
+            lpValueName: *const u16,
+            Reserved: u32,
+            dwType: u32,
+            lpData: *const u8,
+            cbData: u32,
+        ) -> i32;
+
+        fn RegCloseKey(hKey: HKEY) -> i32;
+    }
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
     pub fn dos_path_to_device_path(dos_path: &str) -> String {
         let clean = dos_path.trim();
         if clean.starts_with(r"\Device\") {
@@ -192,11 +246,7 @@ pub mod win {
         if clean.len() >= 2 && clean.as_bytes()[1] == b':' {
             let drive = &clean[..2];
             let rest = &clean[2..];
-
-            let drive_wide: Vec<u16> = OsStr::new(drive)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
+            let drive_wide = to_wide(drive);
 
             let mut target_buf = vec![0u16; 512];
             let len = unsafe {
@@ -218,114 +268,180 @@ pub mod win {
         clean.to_string()
     }
 
-    pub fn find_hidhide_cli() -> Option<PathBuf> {
-        let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
-        let program_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
-
-        let candidates = [
-            format!(r"{program_files}\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe"),
-            format!(r"{program_files}\Nefarius Software Solutions\HidHide\HidHideCLI.exe"),
-            format!(r"{program_files}\Nefarius Software Solutions e.U\HidHideCLI\HidHideCLI.exe"),
-            format!(r"{program_files}\Nefarius Software Solutions e.U\HidHide\x64\HidHideCLI.exe"),
-            format!(r"{program_files}\Nefarius Software Solutions e.U\HidHide\HidHideCLI.exe"),
-            format!(r"{program_files}\Nefarius\HidHide\x64\HidHideCLI.exe"),
-            format!(r"{program_files}\Nefarius\HidHide\HidHideCLI.exe"),
-            format!(r"{program_files}\HidHide\x64\HidHideCLI.exe"),
-            format!(r"{program_files}\HidHide\HidHideCLI.exe"),
-            format!(r"{program_files_x86}\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe"),
-            format!(r"{program_files_x86}\Nefarius Software Solutions\HidHide\HidHideCLI.exe"),
-            r"C:\Program Files\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe".into(),
-            r"C:\Program Files\Nefarius Software Solutions\HidHide\HidHideCLI.exe".into(),
-            r"C:\Program Files\Nefarius Software Solutions e.U\HidHideCLI\HidHideCLI.exe".into(),
-        ];
-
-        for c in &candidates {
-            let p = PathBuf::from(c);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-
-        if let Ok(output) = std::process::Command::new("where").arg("HidHideCLI.exe").output() {
-            if output.status.success() {
-                let out_str = String::from_utf8_lossy(&output.stdout);
-                if let Some(first_line) = out_str.lines().next() {
-                    let p = PathBuf::from(first_line.trim());
-                    if p.exists() {
-                        return Some(p);
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    pub fn cli_get_cloak_state() -> Option<bool> {
-        let cli = find_hidhide_cli()?;
-        let output = std::process::Command::new(cli).arg("--cloak-state").output().ok()?;
-        let txt = format!("{} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)).to_lowercase();
-        if txt.contains("cloak-on") || txt.contains("active") || txt.contains("true") || txt.contains("enabled") {
-            Some(true)
-        } else if txt.contains("cloak-off") || txt.contains("inactive") || txt.contains("false") || txt.contains("disabled") {
-            Some(false)
+    pub fn is_service_installed() -> bool {
+        let sub = to_wide(r"SYSTEM\CurrentControlSet\Services\HidHide");
+        let mut key: HKEY = std::ptr::null_mut();
+        let ret = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, sub.as_ptr(), 0, KEY_READ, &mut key) };
+        if ret == 0 {
+            unsafe { RegCloseKey(key) };
+            true
         } else {
-            None
+            false
         }
     }
 
-    pub fn cli_get_blacklist() -> Option<Vec<String>> {
-        let cli = find_hidhide_cli()?;
-        let output = std::process::Command::new(cli).arg("--dev-list").output().ok()?;
-        let txt = String::from_utf8_lossy(&output.stdout);
-        let mut list = Vec::new();
-        for line in txt.lines() {
-            let clean = line.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '\\' && c != '&' && c != '#').trim();
-            let upper = clean.to_uppercase();
-            if upper.contains(r"\VID_") || upper.starts_with(r"HID\") || upper.starts_with(r"USB\") || upper.starts_with(r"BTHENUM\") {
-                list.push(clean.to_string());
-            }
+    pub fn reg_get_active() -> bool {
+        let sub = to_wide(PARAMS_KEY);
+        let val_name = to_wide("Active");
+        let mut key: HKEY = std::ptr::null_mut();
+        let ret = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, sub.as_ptr(), 0, KEY_READ, &mut key) };
+        if ret != 0 {
+            return false;
         }
-        Some(list)
+
+        let mut val = 0u32;
+        let mut val_type = 0u32;
+        let mut size = 4u32;
+        let ret_val = unsafe {
+            RegQueryValueExW(
+                key,
+                val_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut val_type,
+                &mut val as *mut _ as *mut u8,
+                &mut size,
+            )
+        };
+        unsafe { RegCloseKey(key) };
+        ret_val == 0 && val == 1
     }
 
-    pub fn cli_get_gaming_devices() -> Option<Vec<String>> {
-        let cli = find_hidhide_cli()?;
-        let output = std::process::Command::new(cli).arg("--dev-gaming").output().ok()?;
-        let txt = String::from_utf8_lossy(&output.stdout);
-        let mut list = Vec::new();
-        for line in txt.lines() {
-            let clean = line.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '\\' && c != '&' && c != '#').trim();
-            let upper = clean.to_uppercase();
-            if upper.contains(r"\VID_") || upper.starts_with(r"HID\") || upper.starts_with(r"USB\") || upper.starts_with(r"BTHENUM\") {
-                list.push(clean.to_string());
-            }
+    pub fn reg_set_active(active: bool) -> Result<(), String> {
+        let sub = to_wide(PARAMS_KEY);
+        let val_name = to_wide("Active");
+        let mut key: HKEY = std::ptr::null_mut();
+        let ret = unsafe {
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                sub.as_ptr(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                KEY_WRITE | KEY_READ,
+                std::ptr::null_mut(),
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        };
+        if ret != 0 {
+            return Err(format!("Registry access denied (code {ret})"));
         }
-        Some(list)
+
+        let val: u32 = if active { 1 } else { 0 };
+        let ret_val = unsafe {
+            RegSetValueExW(
+                key,
+                val_name.as_ptr(),
+                0,
+                REG_DWORD,
+                &val as *const _ as *const u8,
+                4,
+            )
+        };
+        unsafe { RegCloseKey(key) };
+        if ret_val == 0 {
+            Ok(())
+        } else {
+            Err(format!("Cannot write Active value (code {ret_val})"))
+        }
     }
 
-    pub fn cli_get_whitelist() -> Option<Vec<String>> {
-        let cli = find_hidhide_cli()?;
-        let output = std::process::Command::new(cli).arg("--app-list").output().ok()?;
-        let txt = String::from_utf8_lossy(&output.stdout);
-        let mut list = Vec::new();
-        for line in txt.lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && (trimmed.contains('\\') || trimmed.contains('/')) {
-                list.push(trimmed.to_string());
-            }
+    pub fn reg_get_multi_sz(name: &str) -> Vec<String> {
+        let sub = to_wide(PARAMS_KEY);
+        let val_name = to_wide(name);
+        let mut key: HKEY = std::ptr::null_mut();
+        let ret = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, sub.as_ptr(), 0, KEY_READ, &mut key) };
+        if ret != 0 {
+            return Vec::new();
         }
-        Some(list)
+
+        let mut size = 0u32;
+        let mut val_type = 0u32;
+        let _ = unsafe {
+            RegQueryValueExW(
+                key,
+                val_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut val_type,
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+
+        if size == 0 {
+            unsafe { RegCloseKey(key) };
+            return Vec::new();
+        }
+
+        let mut buf = vec![0u8; size as usize + 4];
+        let ret_val = unsafe {
+            RegQueryValueExW(
+                key,
+                val_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut val_type,
+                buf.as_mut_ptr(),
+                &mut size,
+            )
+        };
+        unsafe { RegCloseKey(key) };
+
+        if ret_val == 0 {
+            let u16_slice: &[u16] = unsafe {
+                std::slice::from_raw_parts(buf.as_ptr() as *const u16, size as usize / 2)
+            };
+            multi_sz_to_string_list(u16_slice)
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn reg_set_multi_sz(name: &str, list: &[String]) -> Result<(), String> {
+        let sub = to_wide(PARAMS_KEY);
+        let val_name = to_wide(name);
+        let mut key: HKEY = std::ptr::null_mut();
+        let ret = unsafe {
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                sub.as_ptr(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                KEY_WRITE | KEY_READ,
+                std::ptr::null_mut(),
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        };
+        if ret != 0 {
+            return Err(format!("Registry access denied for {name} (code {ret})"));
+        }
+
+        let multi_sz = string_list_to_multi_sz(list);
+        let ret_val = unsafe {
+            RegSetValueExW(
+                key,
+                val_name.as_ptr(),
+                0,
+                REG_MULTI_SZ,
+                multi_sz.as_ptr() as *const u8,
+                (multi_sz.len() * 2) as u32,
+            )
+        };
+        unsafe { RegCloseKey(key) };
+
+        if ret_val == 0 {
+            Ok(())
+        } else {
+            Err(format!("Cannot write {name} (code {ret_val})"))
+        }
     }
 
     pub struct HidHideHandle(HANDLE);
 
     impl HidHideHandle {
         pub fn open() -> Result<Self, String> {
-            let path_wide: Vec<u16> = OsStr::new(r"\\.\HidHide")
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
+            let path_wide = to_wide(r"\\.\HidHide");
 
             unsafe {
                 let mut handle = CreateFileW(
@@ -351,48 +467,14 @@ pub mod win {
                 }
 
                 if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-                    let err = GetLastError();
-                    return Err(format!(
-                        "HidHide driver not installed or control device not accessible (Win32 error {err})"
-                    ));
+                    return Err("HidHide driver not installed or control device not accessible".into());
                 }
 
                 Ok(Self(handle))
             }
         }
 
-        pub fn get_active(&self) -> Result<bool, String> {
-            if let Some(cli_state) = cli_get_cloak_state() {
-                return Ok(cli_state);
-            }
-
-            let mut active_byte = 0u8;
-            let mut returned = 0u32;
-            let ok = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    IOCTL_GET_ACTIVE,
-                    std::ptr::null(),
-                    0,
-                    &mut active_byte as *mut _ as *mut _,
-                    1,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-            if ok != 0 {
-                return Ok(active_byte != 0);
-            }
-
-            Ok(false)
-        }
-
-        pub fn set_active(&self, active: bool) -> Result<(), String> {
-            if let Some(cli) = find_hidhide_cli() {
-                let arg = if active { "--cloak-on" } else { "--cloak-off" };
-                let _ = std::process::Command::new(cli).arg(arg).status();
-            }
-
+        pub fn set_active(&self, active: bool) {
             let active_byte = if active { 1u8 } else { 0u8 };
             let mut returned = 0u32;
             let _ = unsafe {
@@ -407,83 +489,15 @@ pub mod win {
                     std::ptr::null_mut(),
                 )
             };
-
-            Ok(())
         }
 
-        pub fn get_blacklist(&self) -> Result<Vec<String>, String> {
-            if let Some(cli_list) = cli_get_blacklist() {
-                if !cli_list.is_empty() {
-                    return Ok(cli_list);
-                }
-            }
-            self.get_multi_sz(IOCTL_GET_BLACKLIST)
-        }
-
-        pub fn set_blacklist(&self, list: &[String]) -> Result<(), String> {
-            if let Some(cli) = find_hidhide_cli() {
-                for item in list {
-                    let _ = std::process::Command::new(&cli)
-                        .args(["--dev-hide", item])
-                        .status();
-                }
-            }
-            let _ = self.set_multi_sz(IOCTL_SET_BLACKLIST, list);
-            Ok(())
-        }
-
-        pub fn get_whitelist(&self) -> Result<Vec<String>, String> {
-            if let Some(cli_apps) = cli_get_whitelist() {
-                if !cli_apps.is_empty() {
-                    return Ok(cli_apps);
-                }
-            }
-            self.get_multi_sz(IOCTL_GET_WHITELIST)
-        }
-
-        pub fn set_whitelist(&self, list: &[String]) -> Result<(), String> {
-            if let Some(cli) = find_hidhide_cli() {
-                for app in list {
-                    let _ = std::process::Command::new(&cli)
-                        .args(["--app-reg", app])
-                        .status();
-                }
-            }
-            let _ = self.set_multi_sz(IOCTL_SET_WHITELIST, list);
-            Ok(())
-        }
-
-        fn get_multi_sz(&self, ioctl: u32) -> Result<Vec<String>, String> {
-            let mut buffer = vec![0u16; 8192];
-            let mut returned = 0u32;
-
-            let ok = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    ioctl,
-                    std::ptr::null(),
-                    0,
-                    buffer.as_mut_ptr() as *mut _,
-                    (buffer.len() * 2) as u32,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-
-            if ok != 0 {
-                return Ok(multi_sz_to_string_list(&buffer));
-            }
-
-            Ok(Vec::new())
-        }
-
-        fn set_multi_sz(&self, ioctl: u32, list: &[String]) -> Result<(), String> {
+        pub fn set_blacklist(&self, list: &[String]) {
             let multi_sz = string_list_to_multi_sz(list);
             let mut returned = 0u32;
             let _ = unsafe {
                 DeviceIoControl(
                     self.0,
-                    ioctl,
+                    IOCTL_SET_BLACKLIST,
                     multi_sz.as_ptr() as *const _,
                     (multi_sz.len() * 2) as u32,
                     std::ptr::null_mut(),
@@ -492,7 +506,23 @@ pub mod win {
                     std::ptr::null_mut(),
                 )
             };
-            Ok(())
+        }
+
+        pub fn set_whitelist(&self, list: &[String]) {
+            let multi_sz = string_list_to_multi_sz(list);
+            let mut returned = 0u32;
+            let _ = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    IOCTL_SET_WHITELIST,
+                    multi_sz.as_ptr() as *const _,
+                    (multi_sz.len() * 2) as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
         }
     }
 
@@ -506,13 +536,13 @@ pub mod win {
 }
 
 // ---------------------------------------------------------------------------
-// High Level Public API
+// High Level Public API (Zero Subprocess Overheads)
 // ---------------------------------------------------------------------------
 
 pub fn is_installed() -> bool {
     #[cfg(windows)]
     {
-        win::find_hidhide_cli().is_some() || win::HidHideHandle::open().is_ok()
+        win::is_service_installed() || win::HidHideHandle::open().is_ok()
     }
     #[cfg(not(windows))]
     {
@@ -527,10 +557,7 @@ pub fn get_status() -> HidHideStatus {
 
     #[cfg(windows)]
     {
-        let cli_found = win::find_hidhide_cli().is_some();
-        let handle_res = win::HidHideHandle::open();
-
-        if !cli_found && handle_res.is_err() {
+        if !is_installed() {
             return HidHideStatus {
                 installed: false,
                 active: false,
@@ -540,29 +567,9 @@ pub fn get_status() -> HidHideStatus {
             };
         }
 
-        let active = if let Some(cli_state) = win::cli_get_cloak_state() {
-            cli_state
-        } else if let Ok(ref h) = handle_res {
-            h.get_active().unwrap_or(false)
-        } else {
-            false
-        };
-
-        let hidden = if let Some(cli_devs) = win::cli_get_blacklist() {
-            cli_devs
-        } else if let Ok(ref h) = handle_res {
-            h.get_blacklist().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let whitelist = if let Some(cli_apps) = win::cli_get_whitelist() {
-            cli_apps
-        } else if let Ok(ref h) = handle_res {
-            h.get_whitelist().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let active = win::reg_get_active();
+        let hidden = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
+        let whitelist = win::reg_get_multi_sz("WhitelistedFullImageNames");
 
         let exe_lower = current_exe.to_lowercase();
         let dev_lower = win::dos_path_to_device_path(&current_exe).to_lowercase();
@@ -605,33 +612,24 @@ pub fn auto_whitelist_current_process() -> Result<(), String> {
             .to_string();
 
         let device_path = win::dos_path_to_device_path(&current_exe);
+        let mut whitelist = win::reg_get_multi_sz("WhitelistedFullImageNames");
+        let dev_lower = device_path.to_lowercase();
+        let exe_lower = current_exe.to_lowercase();
 
-        if let Some(cli) = win::find_hidhide_cli() {
-            let _ = std::process::Command::new(&cli)
-                .args(["--app-reg", &device_path])
-                .status();
-            let _ = std::process::Command::new(&cli)
-                .args(["--app-reg", &current_exe])
-                .status();
+        let mut changed = false;
+        if !whitelist.iter().any(|w| w.to_lowercase() == dev_lower) {
+            whitelist.push(device_path.clone());
+            changed = true;
+        }
+        if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
+            whitelist.push(current_exe.clone());
+            changed = true;
         }
 
-        if let Ok(handle) = win::HidHideHandle::open() {
-            let mut whitelist = handle.get_whitelist().unwrap_or_default();
-            let dev_lower = device_path.to_lowercase();
-            let exe_lower = current_exe.to_lowercase();
-
-            let mut changed = false;
-            if !whitelist.iter().any(|w| w.to_lowercase() == dev_lower) {
-                whitelist.push(device_path);
-                changed = true;
-            }
-            if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
-                whitelist.push(current_exe);
-                changed = true;
-            }
-
-            if changed {
-                let _ = handle.set_whitelist(&whitelist);
+        if changed {
+            let _ = win::reg_set_multi_sz("WhitelistedFullImageNames", &whitelist);
+            if let Ok(handle) = win::HidHideHandle::open() {
+                handle.set_whitelist(&whitelist);
             }
         }
 
@@ -653,29 +651,25 @@ pub fn hide_device(raw_path: &str) -> Result<(), String> {
     {
         let _ = auto_whitelist_current_process();
 
-        // 1. Hide via official CLI
-        if let Some(cli) = win::find_hidhide_cli() {
-            for id in &ids {
-                let _ = std::process::Command::new(&cli)
-                    .args(["--dev-hide", id, "--cloak-on"])
-                    .status();
+        let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
+        let mut changed = false;
+        for id in &ids {
+            if !list.iter().any(|p| p.eq_ignore_ascii_case(id)) {
+                list.push(id.clone());
+                changed = true;
             }
         }
 
-        // 2. Hide via IOCTL
+        if changed {
+            let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+            if let Ok(handle) = win::HidHideHandle::open() {
+                handle.set_blacklist(&list);
+            }
+        }
+
+        let _ = win::reg_set_active(true);
         if let Ok(handle) = win::HidHideHandle::open() {
-            let mut list = handle.get_blacklist().unwrap_or_default();
-            let mut changed = false;
-            for id in &ids {
-                if !list.iter().any(|p| p.eq_ignore_ascii_case(id)) {
-                    list.push(id.clone());
-                    changed = true;
-                }
-            }
-            if changed {
-                let _ = handle.set_blacklist(&list);
-            }
-            let _ = handle.set_active(true);
+            handle.set_active(true);
         }
 
         Ok(())
@@ -692,22 +686,17 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        if let Some(cli) = win::find_hidhide_cli() {
-            for id in &ids {
-                let _ = std::process::Command::new(&cli)
-                    .args(["--dev-unhide", id])
-                    .status();
+        let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
+        let initial_len = list.len();
+        list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
+
+        if list.len() != initial_len {
+            let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+            if let Ok(handle) = win::HidHideHandle::open() {
+                handle.set_blacklist(&list);
             }
         }
 
-        if let Ok(handle) = win::HidHideHandle::open() {
-            let mut list = handle.get_blacklist().unwrap_or_default();
-            let initial_len = list.len();
-            list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
-            if list.len() != initial_len {
-                let _ = handle.set_blacklist(&list);
-            }
-        }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -720,13 +709,9 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
 pub fn set_active(active: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
-        if let Some(cli) = win::find_hidhide_cli() {
-            let arg = if active { "--cloak-on" } else { "--cloak-off" };
-            let _ = std::process::Command::new(cli).arg(arg).status();
-        }
-
+        let _ = win::reg_set_active(active);
         if let Ok(handle) = win::HidHideHandle::open() {
-            let _ = handle.set_active(active);
+            handle.set_active(active);
         }
         Ok(())
     }
@@ -737,50 +722,15 @@ pub fn set_active(active: bool) -> Result<(), String> {
     }
 }
 
-pub fn cloak_all_gaming_controllers() -> Result<Vec<String>, String> {
-    #[cfg(windows)]
-    {
-        let _ = auto_whitelist_current_process();
-        let mut hidden = Vec::new();
-
-        if let Some(gaming_devs) = win::cli_get_gaming_devices() {
-            if let Some(cli) = win::find_hidhide_cli() {
-                for dev in &gaming_devs {
-                    let _ = std::process::Command::new(&cli)
-                        .args(["--dev-hide", dev])
-                        .status();
-                    hidden.push(dev.clone());
-                }
-                let _ = std::process::Command::new(&cli).arg("--cloak-on").status();
-            }
-        }
-
-        let _ = set_active(true);
-        Ok(hidden)
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(Vec::new())
-    }
-}
-
 pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
     #[cfg(windows)]
     {
-        if let Some(cli) = win::find_hidhide_cli() {
-            let _ = std::process::Command::new(&cli).arg("--cloak-off").status();
-            if let Some(devs) = win::cli_get_blacklist() {
-                for dev in devs {
-                    let _ = std::process::Command::new(&cli).args(["--dev-unhide", &dev]).status();
-                }
-            }
-        }
-
-        let _ = set_active(false);
+        let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[]);
+        let _ = win::reg_set_active(false);
 
         if let Ok(handle) = win::HidHideHandle::open() {
-            let _ = handle.set_blacklist(&[]);
-            let _ = handle.set_active(false);
+            handle.set_blacklist(&[]);
+            handle.set_active(false);
         }
 
         Ok(get_status())
@@ -792,7 +742,10 @@ pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
 }
 
 pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
     use tauri::Manager;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let candidate_names = [
         "HidHide_Setup.exe",
@@ -803,7 +756,6 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
 
     let mut found_installer: Option<PathBuf> = None;
 
-    // 1. Search in Tauri app resource directory
     if let Ok(res_dir) = app.path().resource_dir() {
         for name in &candidate_names {
             let p1 = res_dir.join("resources").join(name);
@@ -819,14 +771,12 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
         }
     }
 
-    // 2. Search alongside current executable or working directory
     if found_installer.is_none() {
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(parent) = exe_path.parent() {
                 for name in &candidate_names {
                     let p1 = parent.join("resources").join(name);
                     let p2 = parent.join(name);
-                    let p3 = parent.join("src-tauri").join("resources").join(name);
                     if p1.exists() {
                         found_installer = Some(p1);
                         break;
@@ -835,37 +785,11 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
                         found_installer = Some(p2);
                         break;
                     }
-                    if p3.exists() {
-                        found_installer = Some(p3);
-                        break;
-                    }
                 }
             }
         }
     }
 
-    // 3. Search in current working directory / src-tauri/resources
-    if found_installer.is_none() {
-        for name in &candidate_names {
-            let p1 = PathBuf::from("src-tauri").join("resources").join(name);
-            let p2 = PathBuf::from("resources").join(name);
-            let p3 = PathBuf::from(name);
-            if p1.exists() {
-                found_installer = Some(p1);
-                break;
-            }
-            if p2.exists() {
-                found_installer = Some(p2);
-                break;
-            }
-            if p3.exists() {
-                found_installer = Some(p3);
-                break;
-            }
-        }
-    }
-
-    // 4. If not found locally, download official installer via PowerShell
     let target_path = if let Some(local_path) = found_installer {
         local_path
     } else {
@@ -874,7 +798,11 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
             "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; (New-Object System.Net.WebClient).DownloadFile('https://github.com/nefarius/HidHide/releases/download/v1.5.230.0/HidHide_1.5.230_x64.exe', '{}')",
             temp_exe.to_string_lossy().replace('\'', "''")
         );
-        let dl_status = std::process::Command::new("powershell")
+        let mut dl = std::process::Command::new("powershell");
+        #[cfg(windows)]
+        dl.creation_flags(CREATE_NO_WINDOW);
+
+        let dl_status = dl
             .args(["-Command", &dl_cmd])
             .status()
             .map_err(|e| format!("failed to download HidHide installer: {e}"))?;
@@ -886,13 +814,17 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
                 fallback_url,
                 temp_exe.to_string_lossy().replace('\'', "''")
             );
-            let fallback_status = std::process::Command::new("powershell")
+            let mut dl2 = std::process::Command::new("powershell");
+            #[cfg(windows)]
+            dl2.creation_flags(CREATE_NO_WINDOW);
+
+            let fallback_status = dl2
                 .args(["-Command", &dl_fallback])
                 .status()
                 .map_err(|e| format!("failed to download HidHide installer: {e}"))?;
 
             if !fallback_status.success() || !temp_exe.exists() {
-                return Err("Failed to download HidHide installer from GitHub releases. Please check your internet connection or place HidHide_Setup.exe in src-tauri/resources/".into());
+                return Err("Failed to download HidHide installer from GitHub releases. Please check internet connection or place HidHide_Setup.exe in src-tauri/resources/".into());
             }
         }
         temp_exe
@@ -915,12 +847,19 @@ pub fn install_hidhide_driver(app: &tauri::AppHandle) -> Result<String, String> 
         )
     };
 
-    let status = std::process::Command::new("powershell")
+    let mut install_proc = std::process::Command::new("powershell");
+    #[cfg(windows)]
+    install_proc.creation_flags(CREATE_NO_WINDOW);
+
+    let status = install_proc
         .args(["-Command", &install_cmd])
         .status()
         .map_err(|e| format!("failed to run HidHide installer: {e}"))?;
 
-    let _ = std::process::Command::new("powershell")
+    let mut start_svc = std::process::Command::new("powershell");
+    #[cfg(windows)]
+    start_svc.creation_flags(CREATE_NO_WINDOW);
+    let _ = start_svc
         .args(["-Command", "Start-Service HidHide -ErrorAction SilentlyContinue; net start HidHide"])
         .status();
 
