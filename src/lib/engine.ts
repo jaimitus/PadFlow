@@ -137,8 +137,20 @@ class WebEngine {
     return out;
   }
 
-  setProfile(p: StickProfileConfig) {
+  private profilesByPad: Record<string, StickProfileConfig> = {};
+
+  setProfile(p: StickProfileConfig, padId?: string) {
     this.profile = p;
+    if (padId) {
+      this.profilesByPad[padId] = p;
+    }
+  }
+
+  getProfile(padId?: string): StickProfileConfig {
+    if (padId && this.profilesByPad[padId]) {
+      return this.profilesByPad[padId];
+    }
+    return this.profile;
   }
 
   setLed(padId: string, rgb: [number, number, number]) {
@@ -381,11 +393,11 @@ export const padflow = {
     web.setLed(padId, [r, g, b]);
   },
 
-  async updateStickProfile(profileData: StickProfileConfig) {
+  async updateStickProfile(profileData: StickProfileConfig, padId?: string) {
     if (isNative()) {
-      return tauriInvoke<StickProfileConfig>("update_stick_profile", { profileData });
+      return tauriInvoke<StickProfileConfig>("update_stick_profile", { profileData, padId: padId ?? null });
     }
-    web.setProfile(profileData);
+    web.setProfile(profileData, padId);
     return profileData;
   },
 
@@ -524,6 +536,7 @@ export const padflow = {
     return {
       stats: web.stats(),
       profile: DEFAULT_PROFILE,
+      deviceProfiles: {},
       devices: [],
       vigemInstalled: true,
       hidhideStatus: web.hidhideStatus(),

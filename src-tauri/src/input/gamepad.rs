@@ -772,7 +772,8 @@ pub struct PadFlowEngine {
 }
 
 struct EngineInner {
-    profile: RwLock<StickProfileConfig>,
+    default_profile: RwLock<StickProfileConfig>,
+    device_profiles: RwLock<HashMap<String, StickProfileConfig>>,
     running: AtomicBool,
     virtual_online: AtomicBool,
     polls: AtomicU64,
@@ -801,7 +802,8 @@ impl PadFlowEngine {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(EngineInner {
-                profile: RwLock::new(StickProfileConfig::default()),
+                default_profile: RwLock::new(StickProfileConfig::default()),
+                device_profiles: RwLock::new(HashMap::new()),
                 running: AtomicBool::new(false),
                 virtual_online: AtomicBool::new(false),
                 polls: AtomicU64::new(0),
@@ -826,11 +828,38 @@ impl PadFlowEngine {
     }
 
     pub fn profile(&self) -> StickProfileConfig {
-        *self.inner.profile.read()
+        self.profile_for(None)
+    }
+
+    pub fn profile_for(&self, pad_id: Option<&str>) -> StickProfileConfig {
+        let profiles = self.inner.device_profiles.read();
+        if let Some(id) = pad_id {
+            if let Some(p) = profiles.get(id) {
+                return *p;
+            }
+        } else if let Some(ref active_id) = *self.inner.active_pad.read() {
+            if let Some(p) = profiles.get(active_id) {
+                return *p;
+            }
+        }
+        *self.inner.default_profile.read()
+    }
+
+    pub fn all_profiles(&self) -> HashMap<String, StickProfileConfig> {
+        self.inner.device_profiles.read().clone()
     }
 
     pub fn set_profile(&self, p: StickProfileConfig) {
-        *self.inner.profile.write() = p;
+        self.set_profile_for(None, p);
+    }
+
+    pub fn set_profile_for(&self, pad_id: Option<&str>, p: StickProfileConfig) {
+        *self.inner.default_profile.write() = p;
+        if let Some(id) = pad_id {
+            self.inner.device_profiles.write().insert(id.to_string(), p);
+        } else if let Some(ref active_id) = *self.inner.active_pad.read() {
+            self.inner.device_profiles.write().insert(active_id.clone(), p);
+        }
     }
 
     pub fn devices(&self) -> Vec<GamepadInfo> {
@@ -1212,7 +1241,13 @@ where
             };
 
             // ---- shape ------------------------------------------------------
-            let prof = *inner.profile.read();
+            let prof = {
+                let dev_profiles = inner.device_profiles.read();
+                dev_profiles
+                    .get(&p.info.id)
+                    .copied()
+                    .unwrap_or_else(|| *inner.default_profile.read())
+            };
             let (lx, ly) = shape_stick(raw.lx, raw.ly, &prof.left);
             let (rx, ry) = shape_stick(raw.rx, raw.ry, &prof.right);
             let mut lt = shape_trigger(raw.l2, &prof.trigger_left);

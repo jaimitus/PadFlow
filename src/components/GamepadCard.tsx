@@ -9,6 +9,7 @@ interface Props {
   charging: boolean;
   isCloaked?: boolean;
   hidhideInstalled?: boolean;
+  activeProfileName?: string;
   onSelect: () => void;
   onLed: (rgb: [number, number, number]) => void;
   onRumble: () => void;
@@ -40,6 +41,7 @@ export default function GamepadCard({
   charging,
   isCloaked = false,
   hidhideInstalled = false,
+  activeProfileName,
   onSelect,
   onLed,
   onRumble,
@@ -83,8 +85,11 @@ export default function GamepadCard({
               {pad.connection === "usb" ? "USB · WIRED" : "BLUETOOTH"}
             </Tag>
             <Tag>{pad.reportRateHz} Hz</Tag>
-            {pad.hasGyro && <Tag>GYRO</Tag>}
-            {pad.hasTouchpad && <Tag>TOUCHPAD</Tag>}
+            {activeProfileName && (
+              <Tag className="border-cyan-400/30 bg-cyan-400/10 text-cyan-200 font-bold">
+                🎯 {activeProfileName}
+              </Tag>
+            )}
             {hidhideInstalled && (
               <Tag
                 className={cn(
@@ -105,7 +110,7 @@ export default function GamepadCard({
             selected ? "bg-cyan-400/20 text-cyan-200" : "bg-white/5 text-slate-400",
           )}
         >
-          {selected ? "mapped" : "idle"}
+          {selected ? "active slot" : "mapped"}
         </span>
       </div>
 

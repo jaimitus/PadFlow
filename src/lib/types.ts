@@ -100,6 +100,7 @@ export interface EngineStats {
 export interface EngineStatus {
   stats: EngineStats;
   profile: StickProfileConfig;
+  deviceProfiles: Record<string, StickProfileConfig>;
   devices: GamepadInfo[];
   vigemInstalled: boolean;
   hidhideStatus: HidHideStatus;

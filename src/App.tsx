@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CircularityTester from "./components/CircularityTester";
 import DeadzoneTuner from "./components/DeadzoneTuner";
 import GamepadCard from "./components/GamepadCard";
 import LiveTelemetry from "./components/LiveTelemetry";
@@ -50,6 +51,9 @@ function normalizeDevicePath(path: string): string {
 export default function App() {
   const [devices, setDevices] = useState<GamepadInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deviceConfigs, setDeviceConfigs] = useState<
+    Record<string, { profile: StickProfileConfig; presetId: string | null; name: string }>
+  >({});
   const [profile, setProfile] = useState<StickProfileConfig>(cloneProfile(DEFAULT_PROFILE));
   const [presetId, setPresetId] = useState<string | null>(null);
   const [stats, setStats] = useState<EngineStats | null>(null);
@@ -67,6 +71,31 @@ export default function App() {
     setToast(msg);
     window.setTimeout(() => setToast(null), 2600);
   }, []);
+
+  // Switch active profile when selected controller changes
+  const selectController = useCallback(
+    (padId: string) => {
+      setSelectedId(padId);
+      padflow.selectGamepad(padId).catch(() => undefined);
+      setDeviceConfigs((prev) => {
+        const existing = prev[padId];
+        if (existing) {
+          setProfile(cloneProfile(existing.profile));
+          setPresetId(existing.presetId);
+        } else {
+          const fresh = cloneProfile(DEFAULT_PROFILE);
+          setProfile(fresh);
+          setPresetId(null);
+          return {
+            ...prev,
+            [padId]: { profile: fresh, presetId: null, name: "Default" },
+          };
+        }
+        return prev;
+      });
+    },
+    [],
+  );
 
   // ---- boot: enumerate + subscribe + start engine --------------------------
   useEffect(() => {
@@ -189,50 +218,99 @@ export default function App() {
   // ---- push profile to the engine (debounced) ------------------------------
   useEffect(() => {
     const id = window.setTimeout(() => {
-      padflow.updateStickProfile(profile).catch((e) => notify(`Profile rejected: ${String(e)}`));
+      if (selectedId) {
+        setDeviceConfigs((prev) => {
+          const cur = prev[selectedId];
+          return {
+            ...prev,
+            [selectedId]: {
+              profile: cloneProfile(profile),
+              presetId: cur?.presetId ?? presetId,
+              name: cur?.name ?? "Custom Profile",
+            },
+          };
+        });
+      }
+      padflow
+        .updateStickProfile(profile, selectedId ?? undefined)
+        .catch((e) => notify(`Profile rejected: ${String(e)}`));
     }, 40);
     return () => window.clearTimeout(id);
-  }, [profile, notify]);
+  }, [profile, selectedId, presetId, notify]);
 
   // ---- handlers ------------------------------------------------------------
   const patchAxis = useCallback(
     (side: "left" | "right", patch: Partial<StickAxisProfile>) => {
       setPresetId(null);
-      setProfile((p) => ({ ...p, [side]: { ...p[side], ...patch } }));
+      setProfile((p) => {
+        const next = { ...p, [side]: { ...p[side], ...patch } };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
     },
-    [],
+    [selectedId],
   );
 
   const patchTrigger = useCallback(
     (side: "left" | "right", patch: Partial<TriggerProfile>) => {
       setPresetId(null);
-      setProfile((p) => ({
-        ...p,
-        [side === "left" ? "triggerLeft" : "triggerRight"]: {
-          ...p[side === "left" ? "triggerLeft" : "triggerRight"],
-          ...patch,
-        },
-      }));
+      setProfile((p) => {
+        const next = {
+          ...p,
+          [side === "left" ? "triggerLeft" : "triggerRight"]: {
+            ...p[side === "left" ? "triggerLeft" : "triggerRight"],
+            ...patch,
+          },
+        };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
     },
-    [],
+    [selectedId],
   );
 
   const patchFlipTriggers = useCallback(
     (flip: boolean) => {
       setPresetId(null);
-      setProfile((p) => ({ ...p, flipTriggers: flip }));
+      setProfile((p) => {
+        const next = { ...p, flipTriggers: flip };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
       notify(flip ? "Bumper & Trigger swap enabled (L1/R1 ↔ L2/R2)" : "Standard Bumper & Trigger mapping restored");
     },
-    [notify],
+    [selectedId, notify],
   );
 
   const applyPreset = useCallback(
     (preset: PadProfilePreset) => {
-      setProfile(cloneProfile(preset.config));
+      const cloned = cloneProfile(preset.config);
+      setProfile(cloned);
       setPresetId(preset.id);
-      notify(`${preset.name} profile pushed to the input thread`);
+      if (selectedId) {
+        setDeviceConfigs((prev) => ({
+          ...prev,
+          [selectedId]: { profile: cloned, presetId: preset.id, name: preset.name },
+        }));
+      }
+      notify(`${preset.name} profile applied to controller`);
     },
-    [notify],
+    [selectedId, notify],
   );
 
   const setLed = useCallback(
@@ -519,10 +597,15 @@ export default function App() {
                       charging={pad.id === snapRef.current.padId ? battery.charging : pad.charging}
                       isCloaked={isDeviceCloaked(pad.path)}
                       hidhideInstalled={hidhideStatus?.installed ?? false}
-                      onSelect={() => {
-                        setSelectedId(pad.id);
-                        padflow.selectGamepad(pad.id).catch(() => undefined);
-                      }}
+                      activeProfileName={
+                        deviceConfigs[pad.id]?.name ??
+                        (pad.id === selectedId
+                          ? presetId
+                            ? "Preset Active"
+                            : "Default"
+                          : undefined)
+                      }
+                      onSelect={() => selectController(pad.id)}
                       onLed={(rgb) => setLed(pad.id, rgb)}
                       onRumble={() => {
                         padflow.testRumble(0.6, 0.9).catch(() => undefined);
@@ -709,6 +792,16 @@ export default function App() {
                 onLeftChange={(patch) => patchTrigger("left", patch)}
                 onRightChange={(patch) => patchTrigger("right", patch)}
                 onFlipChange={patchFlipTriggers}
+                getSnapshot={getSnapshot}
+              />
+
+              <CircularityTester
+                profileLeft={profile.left}
+                profileRight={profile.right}
+                onApplyDeadzone={(side, recDZ) => {
+                  patchAxis(side, { innerDeadzone: recDZ });
+                  notify(`Auto-calibrated ${side} stick deadzone to ${(recDZ * 100).toFixed(1)}%`);
+                }}
                 getSnapshot={getSnapshot}
               />
 

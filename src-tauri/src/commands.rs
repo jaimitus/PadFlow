@@ -24,6 +24,7 @@ use crate::AppState;
 pub struct EngineStatus {
     pub stats: EngineStats,
     pub profile: StickProfileConfig,
+    pub device_profiles: std::collections::HashMap<String, StickProfileConfig>,
     pub devices: Vec<GamepadInfo>,
     pub vigem_installed: bool,
     pub hidhide_status: HidHideStatus,
@@ -76,6 +77,7 @@ pub fn set_led_color(
 #[tauri::command]
 pub fn update_stick_profile(
     profile_data: StickProfileConfig,
+    pad_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<StickProfileConfig, String> {
@@ -86,8 +88,14 @@ pub fn update_stick_profile(
     if !(0.0..=1.0).contains(&profile_data.rumble_intensity) {
         return Err("rumble_intensity must be within 0.0..=1.0".into());
     }
-    state.engine.set_profile(profile_data);
-    let _ = app.emit("padflow-profile-updated", profile_data);
+    state.engine.set_profile_for(pad_id.as_deref(), profile_data);
+    let _ = app.emit(
+        "padflow-profile-updated",
+        serde_json::json!({
+            "padId": pad_id,
+            "profile": profile_data,
+        }),
+    );
     Ok(profile_data)
 }
 
@@ -172,6 +180,7 @@ pub fn get_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, Str
     Ok(EngineStatus {
         stats: state.engine.stats(),
         profile: state.engine.profile(),
+        device_profiles: state.engine.all_profiles(),
         devices,
         vigem_installed: vigem_client::Client::connect().is_ok(),
         hidhide_status: hidhide::get_status(),
