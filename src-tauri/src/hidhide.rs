@@ -31,14 +31,15 @@ const FILE_ANY_ACCESS: u32 = 0;
 const FILE_READ_DATA: u32 = 1;
 const FILE_WRITE_DATA: u32 = 2;
 
-pub const IOCTL_GET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2048, METHOD_BUFFERED, FILE_READ_DATA);
-pub const IOCTL_SET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2049, METHOD_BUFFERED, FILE_WRITE_DATA);
-pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2050, METHOD_BUFFERED, FILE_READ_DATA);
-pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2051, METHOD_BUFFERED, FILE_WRITE_DATA);
-pub const IOCTL_GET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_READ_DATA);
-pub const IOCTL_SET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_WRITE_DATA);
-pub const IOCTL_GET_WLINVERSE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2054, METHOD_BUFFERED, FILE_READ_DATA);
-pub const IOCTL_SET_WLINVERSE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2055, METHOD_BUFFERED, FILE_WRITE_DATA);
+// Official HidHide IOCTL definitions (FILE_ANY_ACCESS = 0)
+pub const IOCTL_GET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2048, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x222000
+pub const IOCTL_SET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2049, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x222004
+pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2050, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x222008
+pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2051, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x22200C
+pub const IOCTL_GET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x222010
+pub const IOCTL_SET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x222014
+pub const IOCTL_GET_WLINVERSE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2054, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x222018
+pub const IOCTL_SET_WLINVERSE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2055, METHOD_BUFFERED, FILE_ANY_ACCESS); // 0x22201C
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -126,6 +127,7 @@ mod win {
     const GENERIC_WRITE: u32 = 0x40000000;
     const FILE_SHARE_READ: u32 = 0x00000001;
     const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const FILE_SHARE_DELETE: u32 = 0x00000004;
     const OPEN_EXISTING: u32 = 3;
     const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
 
@@ -142,6 +144,8 @@ mod win {
         ) -> HANDLE;
 
         fn CloseHandle(hObject: HANDLE) -> i32;
+
+        fn GetLastError() -> u32;
 
         fn DeviceIoControl(
             hDevice: HANDLE,
@@ -165,22 +169,22 @@ mod win {
                 .collect();
 
             unsafe {
-                // Try opening with Read + Write access
+                // Nefarius documentation: Open with GENERIC_READ and full shared access
                 let mut handle = CreateFileW(
                     path_wide.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     std::ptr::null_mut(),
                     OPEN_EXISTING,
                     FILE_ATTRIBUTE_NORMAL,
                     std::ptr::null_mut(),
                 );
 
-                // If non-elevated user mode denied write, fallback to Generic Read
+                // Fallback attempt with Read+Write if available
                 if handle == INVALID_HANDLE_VALUE || handle.is_null() {
                     handle = CreateFileW(
                         path_wide.as_ptr(),
-                        GENERIC_READ,
+                        GENERIC_READ | GENERIC_WRITE,
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         std::ptr::null_mut(),
                         OPEN_EXISTING,
@@ -190,7 +194,10 @@ mod win {
                 }
 
                 if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-                    return Err("HidHide driver not installed or control device not accessible".into());
+                    let err = GetLastError();
+                    return Err(format!(
+                        "HidHide driver not installed or control device not accessible (Win32 error {err})"
+                    ));
                 }
 
                 Ok(Self(handle))
@@ -216,25 +223,8 @@ mod win {
                 return Ok(active_byte != 0);
             }
 
-            // Fallback with FILE_ANY_ACCESS
-            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_ANY_ACCESS);
-            let ok2 = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    ioctl_any,
-                    std::ptr::null(),
-                    0,
-                    &mut active_byte as *mut _ as *mut _,
-                    1,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-            if ok2 != 0 {
-                Ok(active_byte != 0)
-            } else {
-                Err("Failed to get HidHide active status".into())
-            }
+            let err = unsafe { GetLastError() };
+            Err(format!("Failed to get HidHide active status (Win32 error {err})"))
         }
 
         pub fn set_active(&self, active: bool) -> Result<(), String> {
@@ -256,25 +246,8 @@ mod win {
                 return Ok(());
             }
 
-            // Fallback with FILE_ANY_ACCESS
-            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_ANY_ACCESS);
-            let ok2 = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    ioctl_any,
-                    &active_byte as *const _ as *const _,
-                    1,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-            if ok2 != 0 {
-                Ok(())
-            } else {
-                Err("Failed to set HidHide active status. Ensure HidHide is running.".into())
-            }
+            let err = unsafe { GetLastError() };
+            Err(format!("Failed to set HidHide active status (Win32 error {err})"))
         }
 
         pub fn get_blacklist(&self) -> Result<Vec<String>, String> {
@@ -314,26 +287,7 @@ mod win {
                 return Ok(multi_sz_to_string_list(&buffer));
             }
 
-            let fn_code = (ioctl >> 2) & 0xFFF;
-            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, fn_code, METHOD_BUFFERED, FILE_ANY_ACCESS);
-            let ok2 = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    ioctl_any,
-                    std::ptr::null(),
-                    0,
-                    buffer.as_mut_ptr() as *mut _,
-                    (buffer.len() * 2) as u32,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-
-            if ok2 != 0 {
-                Ok(multi_sz_to_string_list(&buffer))
-            } else {
-                Ok(Vec::new())
-            }
+            Ok(Vec::new())
         }
 
         fn set_multi_sz(&self, ioctl: u32, list: &[String]) -> Result<(), String> {
@@ -355,25 +309,10 @@ mod win {
                 return Ok(());
             }
 
-            let fn_code = (ioctl >> 2) & 0xFFF;
-            let ioctl_any = ctl_code(FILE_DEVICE_UNKNOWN, fn_code, METHOD_BUFFERED, FILE_ANY_ACCESS);
-            let ok2 = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    ioctl_any,
-                    multi_sz.as_ptr() as *const _,
-                    (multi_sz.len() * 2) as u32,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-            if ok2 != 0 {
-                Ok(())
-            } else {
-                Err(format!("DeviceIoControl failed to update list for IOCTL {ioctl}"))
-            }
+            let err = unsafe { GetLastError() };
+            Err(format!(
+                "DeviceIoControl failed to update list for IOCTL {ioctl:#010X} (Win32 error {err})"
+            ))
         }
     }
 
