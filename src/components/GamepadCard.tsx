@@ -7,13 +7,10 @@ interface Props {
   selected: boolean;
   liveBattery: number;
   charging: boolean;
-  isCloaked?: boolean;
-  hidhideInstalled?: boolean;
   activeProfileName?: string;
   onSelect: () => void;
   onLed: (rgb: [number, number, number]) => void;
   onRumble: () => void;
-  onToggleCloak?: () => void;
 }
 
 const SWATCHES: [number, number, number][] = [
@@ -39,13 +36,10 @@ export default function GamepadCard({
   selected,
   liveBattery,
   charging,
-  isCloaked = false,
-  hidhideInstalled = false,
   activeProfileName,
   onSelect,
   onLed,
   onRumble,
-  onToggleCloak,
 }: Props) {
   const battery = liveBattery >= 0 ? liveBattery : pad.battery;
   const rgb = pad.led;
@@ -90,18 +84,6 @@ export default function GamepadCard({
                 🎯 {activeProfileName}
               </Tag>
             )}
-            {hidhideInstalled && (
-              <Tag
-                className={cn(
-                  "font-bold transition-colors",
-                  isCloaked
-                    ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-300"
-                    : "border-amber-400/40 bg-amber-400/10 text-amber-300",
-                )}
-              >
-                {isCloaked ? "🛡️ CLOAKED" : "⚠️ UNCLOAKED"}
-              </Tag>
-            )}
           </div>
         </div>
         <span
@@ -135,14 +117,14 @@ export default function GamepadCard({
       {pad.hasLightbar && (
         <div className="relative mt-4" onClick={(e) => e.stopPropagation()}>
           <div className="mb-2 flex items-center justify-between font-mono text-[10px] text-slate-400">
-            <span>LIGHTBAR & SHIELD</span>
+            <span>LIGHTBAR RGB</span>
             <span className="text-slate-300">{hex(rgb).toUpperCase()}</span>
           </div>
           <div
             className="mb-2 h-2 w-full rounded-full transition-all"
             style={{ background: glow, boxShadow: `0 0 18px ${glow}` }}
           />
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex items-center gap-1.5">
             {SWATCHES.map((s) => (
               <button
                 key={s.join()}
@@ -164,28 +146,9 @@ export default function GamepadCard({
               />
             </label>
 
-            {hidhideInstalled && onToggleCloak && (
-              <button
-                type="button"
-                onClick={onToggleCloak}
-                title={isCloaked ? "Physical pad is hidden from games" : "Click to hide physical pad from games"}
-                className={cn(
-                  "ml-auto rounded-md border px-2.5 py-1 font-mono text-[10px] transition-colors",
-                  isCloaked
-                    ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-300 hover:bg-emerald-400/25"
-                    : "border-amber-400/40 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20",
-                )}
-              >
-                {isCloaked ? "🛡️ CLOAKED" : "CLOAK PAD"}
-              </button>
-            )}
-
             <button
               onClick={onRumble}
-              className={cn(
-                "rounded-md border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[10px] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200",
-                !(hidhideInstalled && onToggleCloak) && "ml-auto",
-              )}
+              className="ml-auto rounded-md border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[10px] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
             >
               TEST RUMBLE
             </button>
