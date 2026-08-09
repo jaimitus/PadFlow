@@ -2,7 +2,17 @@ name: CI - Windows manifest check
 
 on:
   push:
+    paths:
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/manifest-check.yml"
   pull_request:
+    paths:
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/manifest-check.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,6 +22,7 @@ jobs:
   manifest-check:
     name: Verify requireAdministrator manifest embedding
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -45,19 +56,22 @@ jobs:
         working-directory: src-tauri
         run: cargo build
 
-      - name: Release exe MUST embed requireAdministrator
+      - name: Release exe MUST embed requireAdministrator + Win10 supportedOS
         shell: bash
         run: |
-          if grep -a -q "requireAdministrator" src-tauri/target/release/padflow.exe; then
-            echo "OK - release exe embeds requireAdministrator"
+          test -f src-tauri/target/release/padflow.exe || { echo "FAIL - release exe was not built"; exit 1; }
+          if grep -a -q "requireAdministrator" src-tauri/target/release/padflow.exe \
+            && grep -a -q "8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a" src-tauri/target/release/padflow.exe; then
+            echo "OK - release exe embeds requireAdministrator (elevated manifest)"
           else
-            echo "FAIL - requireAdministrator NOT found in release exe (manifest missing?)"
+            echo "FAIL - elevated manifest missing from release exe"
             exit 1
           fi
 
       - name: Debug exe must NOT embed requireAdministrator
         shell: bash
         run: |
+          test -f src-tauri/target/debug/padflow.exe || { echo "FAIL - debug exe was not built"; exit 1; }
           if grep -a -q "requireAdministrator" src-tauri/target/debug/padflow.exe; then
             echo "FAIL - debug exe should NOT be elevated but contains requireAdministrator"
             exit 1
