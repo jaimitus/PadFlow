@@ -1,6 +1,6 @@
 # 🎮 PadFlow — Next-Gen Gamepad Input Calibrator & ViGEmBus Bridge
 
-[![Release](https://img.shields.io/badge/Release-v1.2.1-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.2-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
@@ -14,7 +14,15 @@
 
 ---
 
-## 🚀 What's New in v1.2.1 / Novedades de la Versión 1.2.1
+## 🚀 What's New in v1.2.2 / Novedades de la Versión 1.2.2
+
+- **🛡️ CLOAK ALL truly fixed — correct HidHide IOCTL contract:**
+  - The root cause of *"No PlayStation controllers to cloak"* was finally found: PadFlow used `FILE_DEVICE_UNKNOWN` as the IOCTL device type, but the HidHide driver expects its **custom device type 32769**. Every IOCTL was rejected with `ERROR_INVALID_PARAMETER (87)` — cloaking never reached the driver.
+  - v1.2.2 mirrors the official `HidHideIoctlContract.h` from the Nefarius driver (device type `0x8001`, `METHOD_BUFFERED`, `FILE_READ_DATA`), so blacklist/whitelist/active writes now reach the driver and **cloaking works — even without Administrator rights** (the driver persists to the registry in kernel mode).
+
+---
+
+### 🚀 What's New in v1.2.1 / Novedades de la Versión 1.2.1
 
 - **🔐 Cloak Fix — Real error reporting + Administrator elevation:**
   - HidHide rejects blacklist writes from non-elevated processes, which made **CLOAK ALL** silently report *"No PlayStation controllers to cloak"* even with a pad connected. v1.2.1 surfaces the **real cause** instead of hiding it.
@@ -37,6 +45,11 @@
 ---
 
 ### 📜 Version History
+
+#### v1.2.2 — CLOAK ALL Fixed: Correct HidHide IOCTL Contract
+
+- **🛡️ Root cause finally fixed:** PadFlow sent HidHide IOCTLs with device type `FILE_DEVICE_UNKNOWN`, but the driver only accepts its custom type `32769` — every write was rejected with error 87 and cloaking never worked, elevated or not.
+- **📏 Exact contract match:** IOCTL codes now mirror the official `HidHideIoctlContract.h` (type `0x8001`, `METHOD_BUFFERED`, `FILE_READ_DATA`). Blacklist, whitelist and active-state writes reach the driver and persist to the registry from kernel mode — no Administrator rights required.
 
 #### v1.2.1 — Cloak Fix: Real Errors & Administrator Elevation
 
@@ -125,8 +138,8 @@
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
 
 1. **`PadFlow-Portable.exe`** — Single standalone executable. No installation required.
-2. **`PadFlow_1.2.1_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
-3. **`PadFlow_1.2.1_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
+2. **`PadFlow_1.2.2_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
+3. **`PadFlow_1.2.2_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
 
 > **Note:** PadFlow requires the **ViGEmBus driver** (`v1.22.0+`) for virtual Xbox 360 controller emulation, and supports the **HidHide driver** for anti-double-input device cloaking. If missing, PadFlow provides interactive 1-click in-app installer launchers for both official signed drivers.
 

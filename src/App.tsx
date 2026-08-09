@@ -799,11 +799,11 @@ export default function App() {
               </span>
               <div>
                 <p className="text-xs font-semibold text-rose-100">
-                  PadFlow needs Administrator rights to cloak controllers
+                  Administrator mode helps when HidHide rejects changes
                 </p>
                 <p className="font-mono text-[10px] text-rose-300/80">
-                  HidHide rejects blacklist changes from non-elevated processes — that's why CLOAK ALL
-                  reported "nothing to hide" even with your pad connected.
+                  Cloaking usually works without it, but if HidHide refuses a write, restart as
+                  Administrator to force the registry fallback.
                 </p>
               </div>
             </div>

@@ -29,18 +29,21 @@ const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> 
     (device_type << 16) | (access << 14) | (function << 2) | method
 }
 
-const FILE_DEVICE_UNKNOWN: u32 = 0x00000022;
+/// HidHide control-device IOCTL contract — mirror of the official
+/// `Shared/HidHideIoctlContract.h` from the Nefarius driver: custom device
+/// type 32769 (0x8001), METHOD_BUFFERED, FILE_READ_DATA access on every code.
+/// NOTE: the device type is NOT `FILE_DEVICE_UNKNOWN` — using any other value
+/// makes the driver reject every IOCTL with STATUS_INVALID_PARAMETER (87).
+const HIDHIDE_DEVICE_TYPE: u32 = 32769;
 const METHOD_BUFFERED: u32 = 0;
-const FILE_ANY_ACCESS: u32 = 0;
 const FILE_READ_DATA: u32 = 1;
-const FILE_WRITE_DATA: u32 = 2;
 
-pub const IOCTL_GET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2048, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_SET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2049, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2050, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2051, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_GET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_ANY_ACCESS);
-pub const IOCTL_SET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_GET_WHITELIST: u32 = ctl_code(HIDHIDE_DEVICE_TYPE, 2048, METHOD_BUFFERED, FILE_READ_DATA);
+pub const IOCTL_SET_WHITELIST: u32 = ctl_code(HIDHIDE_DEVICE_TYPE, 2049, METHOD_BUFFERED, FILE_READ_DATA);
+pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(HIDHIDE_DEVICE_TYPE, 2050, METHOD_BUFFERED, FILE_READ_DATA);
+pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(HIDHIDE_DEVICE_TYPE, 2051, METHOD_BUFFERED, FILE_READ_DATA);
+pub const IOCTL_GET_ACTIVE: u32 = ctl_code(HIDHIDE_DEVICE_TYPE, 2052, METHOD_BUFFERED, FILE_READ_DATA);
+pub const IOCTL_SET_ACTIVE: u32 = ctl_code(HIDHIDE_DEVICE_TYPE, 2053, METHOD_BUFFERED, FILE_READ_DATA);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -552,22 +555,20 @@ pub mod win {
         pub fn get_active(&self) -> bool {
             let mut active_byte = 0u8;
             let mut returned = 0u32;
-            for ioctl in [IOCTL_GET_ACTIVE, ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_READ_DATA)] {
-                let ok = unsafe {
-                    DeviceIoControl(
-                        self.0,
-                        ioctl,
-                        std::ptr::null(),
-                        0,
-                        &mut active_byte as *mut _ as *mut _,
-                        1,
-                        &mut returned,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if ok != 0 {
-                    return active_byte != 0;
-                }
+            let ok = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    IOCTL_GET_ACTIVE,
+                    std::ptr::null(),
+                    0,
+                    &mut active_byte as *mut _ as *mut _,
+                    1,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                return active_byte != 0;
             }
             reg_get_active()
         }
@@ -577,25 +578,18 @@ pub mod win {
         let mut returned = 0u32;
         let reg_res = reg_set_active(active);
 
-        let mut io_ok = false;
-        for ioctl in [IOCTL_SET_ACTIVE, ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_WRITE_DATA)] {
-            let ok = unsafe {
-                DeviceIoControl(
-                    self.0,
-                    ioctl,
-                    &active_byte as *const _ as *const _,
-                    1,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut returned,
-                    std::ptr::null_mut(),
-                )
-            };
-            if ok != 0 {
-                io_ok = true;
-                break;
-            }
-        }
+        let io_ok = unsafe {
+            DeviceIoControl(
+                self.0,
+                IOCTL_SET_ACTIVE,
+                &active_byte as *const _ as *const _,
+                1,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            ) != 0
+        };
 
         if io_ok {
             Ok(())
