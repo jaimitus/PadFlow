@@ -1,19 +1,24 @@
 name: Release - publish signed binaries
 
-# Trigger: pushing a version tag (v1.3.0, v1.2.4, ...). The tag version must
-# match the version in tauri.conf.json / Cargo.toml / package.json — the
-# workflow verifies it before building.
+# Trigger: pushing a version tag (v1.3.0, v1.2.4, ...) or running manually
+# with a tag input. The tag version must match tauri.conf.json / Cargo.toml /
+# package.json — the workflow verifies all three before building.
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v1.2.4). Must match tauri.conf.json, Cargo.toml and package.json."
+        required: true
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Build, sign & publish ${{ github.ref_name }}
+    name: Build, sign & publish ${{ inputs.tag || github.ref_name }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -40,21 +45,36 @@ jobs:
       - name: Derive version from tag
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            v*.*.*) ;;
+            *) echo "FAIL - invalid release tag: '$TAG' (expected v*.*.*)"; exit 1 ;;
+          esac
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify tag matches tauri.conf.json version
+      - name: Verify tag matches all version sources
         shell: bash
         run: |
+          TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
           CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "$CONF" != "$VERSION" ]; then
-            echo "FAIL - tag is v${VERSION} but tauri.conf.json says ${CONF}. Bump versions first."
-            exit 1
-          fi
-          echo "OK - tag v${VERSION} matches config"
+          PKG=$(node -p "require('./package.json').version")
+          CARGO=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/^version *= *"\(.*\)"/\1/')
+          for PAIR in "tauri.conf.json:$CONF" "package.json:$PKG" "Cargo.toml:$CARGO"; do
+            NAME="${PAIR%%:*}"; VAL="${PAIR#*:}"
+            if [ "$VAL" != "$VERSION" ]; then
+              echo "FAIL - tag is $TAG but $NAME says $VAL. Bump versions first."
+              exit 1
+            fi
+          done
+          echo "OK - tag $TAG matches tauri.conf.json, package.json and Cargo.toml"
 
       # Runs beforeBuildCommand (npm run build) automatically, then builds the
       # signed NSIS + MSI bundles plus the updater artifacts (.sig files).
+      # Note: package.json has no `tauri` script, so npx resolves the local
+      # @tauri-apps/cli devDependency — do NOT switch to `npm run tauri build`.
       - name: Build signed bundles (NSIS + MSI + updater artifacts)
         working-directory: src-tauri
         run: npx tauri build
@@ -62,6 +82,8 @@ jobs:
       - name: Verify requireAdministrator manifest in release exe
         shell: bash
         run: |
+          test -f src-tauri/target/release/padflow.exe \
+            || { echo "FAIL - release exe was not built"; exit 1; }
           grep -a -q "requireAdministrator" src-tauri/target/release/padflow.exe \
             || { echo "FAIL - elevated manifest missing from release exe"; exit 1; }
           echo "OK - release exe is elevated"
@@ -71,9 +93,11 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          SIG=$(tr -d '\n' < "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe.sig")
+          SIG_FILE="src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe.sig"
+          test -f "$SIG_FILE" || { echo "FAIL - updater signature missing: $SIG_FILE"; exit 1; }
+          SIG=$(tr -d '\n' < "$SIG_FILE")
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          printf '{\n  "version": "%s",\n  "notes": "PadFlow v%s — published automatically by GitHub Actions",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "https://github.com/%s/releases/download/%s/PadFlow_%s_x64-setup.exe"\n    }\n  }\n}\n' "$VERSION" "$VERSION" "$PUB_DATE" "$SIG" "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "$VERSION" > latest.json
+          printf '{\n  "version": "%s",\n  "notes": "PadFlow v%s — published automatically by GitHub Actions",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "https://github.com/%s/releases/download/%s/PadFlow_%s_x64-setup.exe"\n    }\n  }\n}\n' "$VERSION" "$VERSION" "$PUB_DATE" "$SIG" "${GITHUB_REPOSITORY}" "${{ steps.version.outputs.tag }}" "$VERSION" > latest.json
           node -e 'JSON.parse(require("fs").readFileSync("latest.json","utf8")); console.log("OK - latest.json valid")'
 
       - name: Create GitHub release with all assets
@@ -82,8 +106,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
           if [ -f RELEASE_NOTES.md ]; then NOTES_ARGS="--notes-file RELEASE_NOTES.md"; else NOTES_ARGS="--generate-notes"; fi
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe" \
             "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe.sig" \
             "src-tauri/target/release/bundle/msi/PadFlow_${VERSION}_x64_en-US.msi" \
@@ -97,4 +122,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --json assets --jq '[.assets[].name]'
+          COUNT=$(gh release view "${{ steps.version.outputs.tag }}" --json assets --jq '[.assets[].name] | length')
+          echo "published assets: $COUNT"
+          [ "$COUNT" -ge 6 ] || { echo "FAIL - expected 6 assets (nsis, nsis.sig, msi, msi.sig, portable, latest.json), got $COUNT"; exit 1; }
+          echo "OK - all 6 assets published"

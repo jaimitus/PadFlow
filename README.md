@@ -227,9 +227,14 @@ git add -A && git commit -m "v1.2.4: <summary of changes>" && git push origin ma
 git tag v1.2.4 && git push origin v1.2.4
 ```
 
-> **Guardrail:** the workflow refuses to run if the tag version does not match
-> `tauri.conf.json` (fail-fast with a clear message). The release exe is also
-> re-verified for the `requireAdministrator` manifest before publishing.
+> **Guardrail:** the workflow refuses to run unless the tag version matches
+> **all three** sources (`tauri.conf.json`, `package.json`, `Cargo.toml`) —
+> fail-fast with a clear message naming the mismatched file. The release exe
+> is also re-verified for the `requireAdministrator` manifest before publishing.
+>
+> **Manual trigger:** the workflow also accepts a manual run (Actions →
+> *Release - publish signed binaries* → *Run workflow*) with the `tag` input,
+> handy for smoke-testing the pipeline before tagging.
 
 ---
 
