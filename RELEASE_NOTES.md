@@ -1,13 +1,14 @@
-# 🛡️ PadFlow v1.2.2 — CLOAK ALL Fixed: Correct HidHide IOCTL Contract
+# 🔐 PadFlow v1.2.3 — Always Elevated: requireAdministrator Manifest
 
-**What's new in this version / Novedades de la Versión 1.2.2:**
+**What's new in this version / Novedades de la Versión 1.2.3:**
 
-- **🛡️ CLOAK ALL finally works — the real root cause is fixed:**
-  - PadFlow was sending HidHide IOCTLs with device type `FILE_DEVICE_UNKNOWN`, but the HidHide driver only recognizes its **custom device type 32769** (`0x8001`). Every control call was rejected with `ERROR_INVALID_PARAMETER (87)` — the blacklist write never reached the driver, so cloaking never worked (elevated or not).
-  - v1.2.2 mirrors the official `Shared/HidHideIoctlContract.h` from the Nefarius driver exactly: device type `0x8001`, `METHOD_BUFFERED`, `FILE_READ_DATA` on all codes.
-  - Blacklist / whitelist / active-state writes now reach the driver, which persists them to the registry from **kernel mode** — cloaking works **without Administrator rights**.
-- **🗯️ Honest diagnostics kept:** real error codes and per-device reports from v1.2.1 remain.
-- **⚡ Everything from v1.2.0 / v1.2.1 kept:** Shield Control Center, per-controller CLOAK/UNCLOAK, global shield switch, auto-cloak on connect, cloak on startup, tray controls, live 3 s status refresh, one-click signed auto-updates.
+- **🔐 PadFlow now requests Administrator rights at launch (UAC):**
+  - A `requireAdministrator` Windows manifest is embedded in the release binaries, so Windows shows the elevation prompt every time PadFlow starts and the whole session runs elevated.
+  - No more in-app "RESTART AS ADMIN" banner — the app is already elevated from the first second.
+  - HidHide cloaking, registry writes, driver installers and tray controls all run with full privileges automatically.
+- **⚡ Everything from v1.2.2 kept:** correct HidHide IOCTL contract (device type `0x8001`), honest diagnostics, Shield Control Center, auto-cloak, cloak on startup, tray controls, live 3 s status refresh and one-click signed auto-updates.
+
+> **Note:** because the app launches elevated, Windows will show a UAC prompt when you start PadFlow. This is intentional — it guarantees HidHide can always apply cloak changes.
 
 ---
 
@@ -16,8 +17,8 @@
 | File | Description |
 | :--- | :--- |
 | `PadFlow-Portable.exe` | Standalone executable — no installation required |
-| `PadFlow_1.2.2_x64-setup.exe` | Recommended Windows installer (NSIS) |
-| `PadFlow_1.2.2_x64_en-US.msi` | MSI installer for enterprise / automated deployment |
+| `PadFlow_1.2.3_x64-setup.exe` | Recommended Windows installer (NSIS) |
+| `PadFlow_1.2.3_x64_en-US.msi` | MSI installer for enterprise / automated deployment |
 | `latest.json` | Update manifest (used by the built-in updater) |
 
 > **Note:** Requires the **ViGEmBus driver** (v1.22.0+) for virtual Xbox 360 controller emulation. Supports the **HidHide driver** for anti-double-input device cloaking — PadFlow provides 1-click in-app installers for both.

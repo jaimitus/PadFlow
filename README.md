@@ -1,6 +1,6 @@
 # 🎮 PadFlow — Next-Gen Gamepad Input Calibrator & ViGEmBus Bridge
 
-[![Release](https://img.shields.io/badge/Release-v1.2.2-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.3-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
@@ -14,7 +14,15 @@
 
 ---
 
-## 🚀 What's New in v1.2.2 / Novedades de la Versión 1.2.2
+## 🚀 What's New in v1.2.3 / Novedades de la Versión 1.2.3
+
+- **🔐 Always elevated — `requireAdministrator` manifest:**
+  - Release binaries embed a Windows manifest requesting Administrator privileges, so the UAC prompt appears at launch and the entire session runs elevated.
+  - The in-app **"RESTART AS ADMIN"** banner is gone — HidHide cloaking, registry writes and driver helpers always have full privileges from the first second.
+
+---
+
+### 🚀 What's New in v1.2.2 / Novedades de la Versión 1.2.2
 
 - **🛡️ CLOAK ALL truly fixed — correct HidHide IOCTL contract:**
   - The root cause of *"No PlayStation controllers to cloak"* was finally found: PadFlow used `FILE_DEVICE_UNKNOWN` as the IOCTL device type, but the HidHide driver expects its **custom device type 32769**. Every IOCTL was rejected with `ERROR_INVALID_PARAMETER (87)` — cloaking never reached the driver.
@@ -45,6 +53,10 @@
 ---
 
 ### 📜 Version History
+
+#### v1.2.3 — Always Elevated: requireAdministrator Manifest
+
+- **🔐 UAC at launch:** a `requireAdministrator` manifest is embedded in the release binaries — PadFlow starts elevated every time, so HidHide cloaking, registry writes and driver installers always have full privileges (no in-app elevation banner needed).
 
 #### v1.2.2 — CLOAK ALL Fixed: Correct HidHide IOCTL Contract
 
@@ -138,8 +150,8 @@
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
 
 1. **`PadFlow-Portable.exe`** — Single standalone executable. No installation required.
-2. **`PadFlow_1.2.2_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
-3. **`PadFlow_1.2.2_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
+2. **`PadFlow_1.2.3_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
+3. **`PadFlow_1.2.3_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
 
 > **Note:** PadFlow requires the **ViGEmBus driver** (`v1.22.0+`) for virtual Xbox 360 controller emulation, and supports the **HidHide driver** for anti-double-input device cloaking. If missing, PadFlow provides interactive 1-click in-app installer launchers for both official signed drivers.
 
