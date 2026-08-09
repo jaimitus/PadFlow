@@ -389,10 +389,11 @@ pub fn relaunch_app(app: AppHandle) -> Result<(), String> {
 
 /// Relaunches PadFlow with Administrator privileges (UAC prompt).
 /// HidHide rejects blacklist writes from unelevated processes.
+/// The detached watcher launches the elevated copy AFTER this process exits
+/// (single-instance plugin compatibility), so we exit immediately.
 #[tauri::command]
 pub fn relaunch_as_admin(app: AppHandle) -> Result<(), String> {
     hidhide::relaunch_as_admin()?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
     app.exit(0);
     Ok(())
 }

@@ -600,7 +600,7 @@ pub mod win {
         if io_ok {
             Ok(())
         } else {
-            reg_res.map(|_| ())
+            reg_res
         }
     }
 
@@ -679,7 +679,11 @@ pub mod win {
             if ok != 0 {
                 Ok(())
             } else {
-                Err("HidHide driver rejected the write (code 5 = access denied — run PadFlow as Administrator)".into())
+                let err = std::io::Error::last_os_error();
+                let code = err.raw_os_error().unwrap_or(0);
+                Err(format!(
+                    "HidHide driver rejected the write (code {code} — {err}); run PadFlow as Administrator"
+                ))
             }
         }
     }
@@ -920,19 +924,36 @@ pub fn set_active(active: bool) -> Result<(), String> {
 pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
     #[cfg(windows)]
     {
+        // Short-circuit: when nothing is hidden and the shield is already off,
+        // there is nothing to write — avoids a confusing access-denied error
+        // for unelevated users with an empty blacklist.
         if let Ok(handle) = win::HidHideHandle::open() {
-            handle.set_blacklist(&[])?;
-            handle.set_active(false)?;
+            if !handle.get_blacklist().is_empty() {
+                handle.set_blacklist(&[])?;
+            }
+            if handle.get_active() {
+                handle.set_active(false)?;
+            }
         } else {
-            win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[])?;
-            win::reg_set_active(false)?;
+            if !win::reg_get_multi_sz("BlacklistedDeviceInstancePaths").is_empty() {
+                win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[])?;
+            }
+            if win::reg_get_active() {
+                win::reg_set_active(false)?;
+            }
         }
     }
     Ok(get_status())
 }
 
 /// Relaunches PadFlow with Administrator privileges (UAC prompt).
-/// Returns Ok once the elevated copy was spawned; the caller should exit.
+///
+/// The elevated copy is launched by a detached watcher that FIRST waits for
+/// this process to exit. That ordering is required: the tauri
+/// single-instance plugin aborts a second instance while the first one still
+/// holds its named mutex, so launching the elevated copy while we are still
+/// alive would make it self-terminate. On UAC cancel the watcher falls back
+/// to launching PadFlow normally so the user is never left with nothing.
 pub fn relaunch_as_admin() -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -941,21 +962,23 @@ pub fn relaunch_as_admin() -> Result<(), String> {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let exe = std::env::current_exe()
             .map_err(|e| format!("failed to resolve PadFlow path: {e}"))?;
-        let cmd = format!(
-            "Start-Process -FilePath '{}' -Verb RunAs",
-            exe.to_string_lossy().replace('\'', "''")
+        let pid = std::process::id();
+        let exe_esc = exe.to_string_lossy().replace('\'', "''");
+        // Wait for THIS process to die, then elevate. Fallback to a normal
+        // launch if the UAC prompt is cancelled.
+        let script = format!(
+            "$ErrorActionPreference='SilentlyContinue'; \
+             $p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
+             if ($p) {{ $p.WaitForExit() }}; \
+             $e = Start-Process -FilePath '{exe_esc}' -Verb RunAs -PassThru; \
+             if (-not $e) {{ Start-Process -FilePath '{exe_esc}' }}"
         );
         let mut proc = std::process::Command::new("powershell");
         proc.creation_flags(CREATE_NO_WINDOW);
-        let status = proc
-            .args(["-Command", &cmd])
-            .status()
-            .map_err(|e| format!("failed to launch elevated PadFlow: {e}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err("Elevated relaunch was cancelled or denied (UAC)".into())
-        }
+        proc.args(["-Command", &script])
+            .spawn()
+            .map_err(|e| format!("failed to schedule elevated relaunch: {e}"))?;
+        Ok(())
     }
     #[cfg(not(windows))]
     {
