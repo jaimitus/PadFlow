@@ -1,9 +1,10 @@
-import { DEFAULT_PROFILE, shapeStick, clamp01 } from "./curves";
+import { DEFAULT_PROFILE, shapeStick, shapeTrigger, clamp01 } from "./curves";
 import type {
   ConnectionType,
   EngineStats,
   EngineStatus,
   GamepadInfo,
+  HidHideStatus,
   InputSnapshot,
   PadKind,
   StickProfileConfig,
@@ -83,8 +84,9 @@ class WebEngine {
   private profile: StickProfileConfig = DEFAULT_PROFILE;
   private inputCbs = new Set<(s: InputSnapshot) => void>();
   private statsCbs = new Set<(s: EngineStats) => void>();
+  private hidhideCbs = new Set<(s: HidHideStatus) => void>();
   private raf = 0;
-  private running = false;
+  private running = true;
   private polls = 0;
   private t0 = performance.now();
   private lastStats = 0;
@@ -92,6 +94,12 @@ class WebEngine {
   private led: Record<string, [number, number, number]> = {};
   private rumbleUntil = 0;
   private peak = 0;
+  private hidhideActive = true;
+  private hiddenDevices: string[] = ["HID\\VID_054C&PID_0CE6&COL01\\7&3084128&0&0000"];
+
+  constructor() {
+    this.start();
+  }
 
   devices(): GamepadInfo[] {
     const out: GamepadInfo[] = [];
@@ -133,8 +141,20 @@ class WebEngine {
     return out;
   }
 
-  setProfile(p: StickProfileConfig) {
+  private profilesByPad: Record<string, StickProfileConfig> = {};
+
+  setProfile(p: StickProfileConfig, padId?: string) {
     this.profile = p;
+    if (padId) {
+      this.profilesByPad[padId] = p;
+    }
+  }
+
+  getProfile(padId?: string): StickProfileConfig {
+    if (padId && this.profilesByPad[padId]) {
+      return this.profilesByPad[padId];
+    }
+    return this.profile;
   }
 
   setLed(padId: string, rgb: [number, number, number]) {
@@ -180,6 +200,37 @@ class WebEngine {
     };
   }
 
+  hidhideStatus(): HidHideStatus {
+    return {
+      installed: true,
+      active: this.hidhideActive,
+      whitelisted: true,
+      hiddenDevices: this.hiddenDevices,
+      appPath: "C:\\Program Files\\PadFlow\\PadFlow.exe",
+    };
+  }
+
+  setHidHideActive(active: boolean): HidHideStatus {
+    this.hidhideActive = active;
+    const st = this.hidhideStatus();
+    this.hidhideCbs.forEach((cb) => cb(st));
+    return st;
+  }
+
+  toggleDeviceHide(path: string, hide: boolean): HidHideStatus {
+    const norm = path.replace(/[\\?#]/g, "_").toUpperCase();
+    if (hide) {
+      if (!this.hiddenDevices.includes(norm)) {
+        this.hiddenDevices.push(norm);
+      }
+    } else {
+      this.hiddenDevices = this.hiddenDevices.filter((p) => p !== norm && p !== path);
+    }
+    const st = this.hidhideStatus();
+    this.hidhideCbs.forEach((cb) => cb(st));
+    return st;
+  }
+
   onInput(cb: (s: InputSnapshot) => void): Unlisten {
     this.inputCbs.add(cb);
     return () => this.inputCbs.delete(cb);
@@ -188,6 +239,11 @@ class WebEngine {
   onStats(cb: (s: EngineStats) => void): Unlisten {
     this.statsCbs.add(cb);
     return () => this.statsCbs.delete(cb);
+  }
+
+  onHidHide(cb: (s: HidHideStatus) => void): Unlisten {
+    this.hidhideCbs.add(cb);
+    return () => this.hidhideCbs.delete(cb);
   }
 
   start() {
@@ -280,6 +336,25 @@ class WebEngine {
     snap.left = [lx2, ly2];
     snap.right = [rx2, ry2];
 
+    let lt = shapeTrigger(snap.triggerLeft, this.profile.triggerLeft);
+    let rt = shapeTrigger(snap.triggerRight, this.profile.triggerRight);
+
+    if (this.profile.flipTriggers) {
+      const l1_pressed = (snap.buttons & BUTTONS.L1) !== 0;
+      const r1_pressed = (snap.buttons & BUTTONS.R1) !== 0;
+
+      const l2_bumper = lt > 0.3 ? BUTTONS.L1 : 0;
+      const r2_bumper = rt > 0.3 ? BUTTONS.R1 : 0;
+
+      lt = l1_pressed ? 1 : 0;
+      rt = r1_pressed ? 1 : 0;
+
+      snap.buttons = (snap.buttons & ~(BUTTONS.L1 | BUTTONS.R1)) | l2_bumper | r2_bumper;
+    }
+
+    snap.triggerLeft = lt;
+    snap.triggerRight = rt;
+
     this.battery = Math.max(4, this.battery - 0.00035);
     snap.battery = Math.round(this.battery);
     snap.charging = now < this.rumbleUntil ? true : this.battery > 85;
@@ -322,11 +397,11 @@ export const padflow = {
     web.setLed(padId, [r, g, b]);
   },
 
-  async updateStickProfile(profileData: StickProfileConfig) {
+  async updateStickProfile(profileData: StickProfileConfig, padId?: string) {
     if (isNative()) {
-      return tauriInvoke<StickProfileConfig>("update_stick_profile", { profileData });
+      return tauriInvoke<StickProfileConfig>("update_stick_profile", { profileData, padId: padId ?? null });
     }
-    web.setProfile(profileData);
+    web.setProfile(profileData, padId);
     return profileData;
   },
 
@@ -365,15 +440,42 @@ export const padflow = {
 
   async onStats(cb: (s: EngineStats) => void): Promise<Unlisten> {
     if (isNative()) {
+      const unlisteners: (() => void)[] = [];
       try {
-        return await tauriListen<EngineStats>("padflow-engine-stats", (e) => {
-          cb(e.payload);
-        });
+        unlisteners.push(
+          await tauriListen<EngineStats>("padflow-engine-stats", (e) => {
+            cb(e.payload);
+          }),
+        );
+        unlisteners.push(
+          await tauriListen<EngineStats>("padflow-engine-started", (e) => {
+            cb(e.payload);
+          }),
+        );
+        unlisteners.push(
+          await tauriListen<EngineStats>("padflow-engine-stopped", (e) => {
+            cb(e.payload);
+          }),
+        );
+        return () => unlisteners.forEach((u) => u());
       } catch (err) {
         console.error("Failed to subscribe to padflow-engine-stats:", err);
       }
     }
     return web.onStats(cb);
+  },
+
+  async onHidHideUpdate(cb: (s: HidHideStatus) => void): Promise<Unlisten> {
+    if (isNative()) {
+      try {
+        return await tauriListen<HidHideStatus>("padflow-hidhide-updated", (e) => {
+          cb(e.payload);
+        });
+      } catch (err) {
+        console.error("Failed to subscribe to padflow-hidhide-updated:", err);
+      }
+    }
+    return web.onHidHide(cb);
   },
 
   async selectGamepad(padId: string): Promise<void> {
@@ -420,14 +522,53 @@ export const padflow = {
     throw new Error("ViGEmBus installation is only available in desktop native mode");
   },
 
+  async getHidHideStatus(): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("get_hidhide_status");
+    return web.hidhideStatus();
+  },
+
+  async setHidHideActive(active: boolean): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("set_hidhide_active", { active });
+    return web.setHidHideActive(active);
+  },
+
+  async toggleDeviceHide(devicePath: string, hide: boolean): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("toggle_device_hide", { devicePath, hide });
+    return web.toggleDeviceHide(devicePath, hide);
+  },
+
+  async autoCloakControllers(): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("auto_cloak_controllers");
+    return web.hidhideStatus();
+  },
+
+  async uncloakAllControllers(): Promise<HidHideStatus> {
+    if (isNative()) return tauriInvoke<HidHideStatus>("uncloak_all_controllers");
+    return web.setHidHideActive(false);
+  },
+
+  async launchHidHideGui(): Promise<string> {
+    if (isNative()) return tauriInvoke<string>("launch_hidhide_gui");
+    throw new Error("HidHide Client is only available in desktop native mode");
+  },
+
+  async installHidHideDriver(): Promise<string> {
+    if (isNative()) {
+      return tauriInvoke<string>("install_hidhide_driver");
+    }
+    throw new Error("HidHide installation is only available in desktop native mode");
+  },
+
   async getEngineStatus(): Promise<EngineStatus> {
     if (isNative()) return tauriInvoke<EngineStatus>("get_engine_status");
     return {
       stats: web.stats(),
       profile: DEFAULT_PROFILE,
-      devices: [],
+      deviceProfiles: {},
+      devices: web.devices(),
       vigemInstalled: true,
-      version: "1.0.0",
+      hidhideStatus: web.hidhideStatus(),
+      version: "1.1.0",
     };
   },
 };

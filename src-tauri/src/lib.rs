@@ -7,6 +7,7 @@
 //! * auto-start the input engine as soon as the webview is ready.
 
 pub mod commands;
+pub mod hidhide;
 pub mod input;
 
 use std::sync::Arc;
@@ -58,6 +59,13 @@ pub fn run() {
             commands::toggle_window,
             commands::open_url,
             commands::install_vigem_driver,
+            commands::get_hidhide_status,
+            commands::set_hidhide_active,
+            commands::toggle_device_hide,
+            commands::auto_cloak_controllers,
+            commands::uncloak_all_controllers,
+            commands::launch_hidhide_gui,
+            commands::install_hidhide_driver,
         ])
         .setup(move |app| {
             // ---- tray -----------------------------------------------------
@@ -86,13 +94,12 @@ pub fn run() {
                         let state = app.state::<AppState>();
                         if state.engine.is_running() {
                             state.engine.stop();
-                            let _ = app.emit("padflow-engine-stopped", state.engine.stats());
+                            let _ = hidhide::uncloak_all_controllers();
+                            let stats = state.engine.stats();
+                            let _ = app.emit("padflow-engine-stopped", stats.clone());
+                            let _ = app.emit("padflow-engine-stats", stats);
                         } else {
-                            let sink = app.clone();
-                            let _ = state.engine.spawn(move |snap| {
-                                let _ = sink.emit("padflow-input-update", snap);
-                            });
-                            let _ = app.emit("padflow-engine-started", state.engine.stats());
+                            let _ = commands::run_engine_with_telemetry(&state.engine, app);
                         }
                     }
                     "rescan" => {
@@ -103,6 +110,7 @@ pub fn run() {
                     }
                     "quit" => {
                         tray_engine.stop();
+                        let _ = hidhide::uncloak_all_controllers();
                         std::process::exit(0);
                     }
                     _ => {}
@@ -157,23 +165,12 @@ pub fn run() {
                 }
             });
 
-            // ---- auto-start the realtime engine ---------------------------
+            // ---- auto-start the realtime engine & HidHide whitelist ------
             let boot = app.handle().clone();
-            let boot_engine = Arc::new(engine.clone());
+            let boot_engine = engine.clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                let _ = boot_engine.rescan();
-                let sink = boot.clone();
-                match boot_engine.spawn(move |snap| {
-                    let _ = sink.emit("padflow-input-update", snap);
-                }) {
-                    Ok(()) => {
-                        let _ = boot.emit("padflow-engine-started", boot_engine.stats());
-                    }
-                    Err(e) => {
-                        let _ = boot.emit("padflow-engine-error", e);
-                    }
-                }
+                let _ = hidhide::auto_whitelist_current_process();
+                let _ = commands::run_engine_with_telemetry(&boot_engine, &boot);
             });
 
             Ok(())

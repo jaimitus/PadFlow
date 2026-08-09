@@ -148,11 +148,33 @@ pub enum CurveKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TriggerProfile {
+    pub inner_deadzone: f32,
+    pub outer_deadzone: f32,
+    pub hair_trigger: bool,
+}
+
+impl Default for TriggerProfile {
+    fn default() -> Self {
+        Self {
+            inner_deadzone: 0.03,
+            outer_deadzone: 0.98,
+            hair_trigger: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StickProfileConfig {
     pub left: StickAxisProfile,
     pub right: StickAxisProfile,
-    pub trigger_inner: f32,
-    pub trigger_outer: f32,
+    pub trigger_left: TriggerProfile,
+    pub trigger_right: TriggerProfile,
+    pub flip_triggers: bool,
+    pub touchpad_mouse: bool,
+    pub touchpad_sensitivity: f32,
+    pub battery_led_mode: bool,
     pub rumble_intensity: f32,
     /// Extra polling aggressiveness: `true` pins the loop to 1000 Hz+.
     pub turbo_polling: bool,
@@ -163,8 +185,12 @@ impl Default for StickProfileConfig {
         Self {
             left: StickAxisProfile::default(),
             right: StickAxisProfile::default(),
-            trigger_inner: 0.03,
-            trigger_outer: 0.99,
+            trigger_left: TriggerProfile::default(),
+            trigger_right: TriggerProfile::default(),
+            flip_triggers: false,
+            touchpad_mouse: false,
+            touchpad_sensitivity: 1.0,
+            battery_led_mode: false,
             rumble_intensity: 1.0,
             turbo_polling: true,
         }
@@ -321,11 +347,13 @@ fn shape_axis(v: f32, p: &StickAxisProfile) -> f32 {
 }
 
 #[inline(always)]
-fn shape_trigger(v: f32, inner: f32, outer: f32) -> f32 {
-    let inner = inner.clamp(0.0, 0.9);
-    let outer = outer.clamp(inner + 0.02, 1.0);
+pub fn shape_trigger(v: f32, p: &TriggerProfile) -> f32 {
+    let inner = p.inner_deadzone.clamp(0.0, 0.8);
+    let outer = p.outer_deadzone.clamp(inner + 0.02, 1.0);
     if v <= inner {
         0.0
+    } else if p.hair_trigger {
+        1.0
     } else {
         ((v - inner) / (outer - inner)).min(1.0)
     }
@@ -750,7 +778,8 @@ pub struct PadFlowEngine {
 }
 
 struct EngineInner {
-    profile: RwLock<StickProfileConfig>,
+    default_profile: RwLock<StickProfileConfig>,
+    device_profiles: RwLock<HashMap<String, StickProfileConfig>>,
     running: AtomicBool,
     virtual_online: AtomicBool,
     polls: AtomicU64,
@@ -779,7 +808,8 @@ impl PadFlowEngine {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(EngineInner {
-                profile: RwLock::new(StickProfileConfig::default()),
+                default_profile: RwLock::new(StickProfileConfig::default()),
+                device_profiles: RwLock::new(HashMap::new()),
                 running: AtomicBool::new(false),
                 virtual_online: AtomicBool::new(false),
                 polls: AtomicU64::new(0),
@@ -804,11 +834,38 @@ impl PadFlowEngine {
     }
 
     pub fn profile(&self) -> StickProfileConfig {
-        *self.inner.profile.read()
+        self.profile_for(None)
+    }
+
+    pub fn profile_for(&self, pad_id: Option<&str>) -> StickProfileConfig {
+        let profiles = self.inner.device_profiles.read();
+        if let Some(id) = pad_id {
+            if let Some(p) = profiles.get(id) {
+                return *p;
+            }
+        } else if let Some(ref active_id) = *self.inner.active_pad.read() {
+            if let Some(p) = profiles.get(active_id) {
+                return *p;
+            }
+        }
+        *self.inner.default_profile.read()
+    }
+
+    pub fn all_profiles(&self) -> HashMap<String, StickProfileConfig> {
+        self.inner.device_profiles.read().clone()
     }
 
     pub fn set_profile(&self, p: StickProfileConfig) {
-        *self.inner.profile.write() = p;
+        self.set_profile_for(None, p);
+    }
+
+    pub fn set_profile_for(&self, pad_id: Option<&str>, p: StickProfileConfig) {
+        *self.inner.default_profile.write() = p;
+        if let Some(id) = pad_id {
+            self.inner.device_profiles.write().insert(id.to_string(), p);
+        } else if let Some(ref active_id) = *self.inner.active_pad.read() {
+            self.inner.device_profiles.write().insert(active_id.clone(), p);
+        }
     }
 
     pub fn devices(&self) -> Vec<GamepadInfo> {
@@ -927,6 +984,41 @@ impl PadFlowEngine {
 }
 
 #[cfg(windows)]
+mod mouse_win {
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn mouse_event(dw_flags: u32, dx: i32, dy: i32, dw_data: u32, dw_extra_info: usize);
+    }
+
+    pub const MOUSEEVENTF_MOVE: u32 = 0x0001;
+    pub const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+    pub const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+    pub const MOUSEEVENTF_WHEEL: u32 = 0x0800;
+
+    #[inline(always)]
+    pub fn move_cursor(dx: i32, dy: i32) {
+        unsafe {
+            mouse_event(MOUSEEVENTF_MOVE, dx, dy, 0, 0);
+        }
+    }
+
+    #[inline(always)]
+    pub fn click_left(down: bool) {
+        unsafe {
+            let flags = if down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP };
+            mouse_event(flags, 0, 0, 0, 0);
+        }
+    }
+
+    #[inline(always)]
+    pub fn scroll(delta: i32) {
+        unsafe {
+            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta as u32, 0);
+        }
+    }
+}
+
+#[cfg(windows)]
 fn raise_thread_priority() {
     use windows::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
@@ -1032,6 +1124,9 @@ struct OpenPad {
     info: GamepadInfo,
     device: HidDevice,
     buf: [u8; 128],
+    last_touch: Option<[f32; 2]>,
+    last_scroll_y: Option<f32>,
+    mouse_clicked: bool,
 }
 
 fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<OpenPad>) {
@@ -1091,6 +1186,9 @@ fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<O
             info: target.clone(),
             device,
             buf: [0u8; 128],
+            last_touch: None,
+            last_scroll_y: None,
+            mouse_clicked: false,
         });
     }
 }
@@ -1190,11 +1288,85 @@ where
             };
 
             // ---- shape ------------------------------------------------------
-            let prof = *inner.profile.read();
+            let prof = {
+                let dev_profiles = inner.device_profiles.read();
+                dev_profiles
+                    .get(&p.info.id)
+                    .copied()
+                    .unwrap_or_else(|| *inner.default_profile.read())
+            };
             let (lx, ly) = shape_stick(raw.lx, raw.ly, &prof.left);
             let (rx, ry) = shape_stick(raw.rx, raw.ry, &prof.right);
-            let lt = shape_trigger(raw.l2, prof.trigger_inner, prof.trigger_outer);
-            let rt = shape_trigger(raw.r2, prof.trigger_inner, prof.trigger_outer);
+            let mut lt = shape_trigger(raw.l2, &prof.trigger_left);
+            let mut rt = shape_trigger(raw.r2, &prof.trigger_right);
+            let mut buttons_mask = raw.buttons;
+
+            if prof.flip_triggers {
+                // Swap physical L1/R1 bumpers with L2/R2 triggers
+                let l1_pressed = (buttons_mask & buttons::L1) != 0;
+                let r1_pressed = (buttons_mask & buttons::R1) != 0;
+
+                let l2_bumper = if lt > 0.3 { buttons::L1 } else { 0 };
+                let r2_bumper = if rt > 0.3 { buttons::R1 } else { 0 };
+
+                lt = if l1_pressed { 1.0 } else { 0.0 };
+                rt = if r1_pressed { 1.0 } else { 0.0 };
+
+                buttons_mask = (buttons_mask & !(buttons::L1 | buttons::R1)) | l2_bumper | r2_bumper;
+            }
+
+            // ---- Touchpad virtual mouse simulation ------------------------
+            if prof.touchpad_mouse {
+                if raw.touch_count == 1 {
+                    let tx = raw.touch[0][0];
+                    let ty = raw.touch[0][1];
+                    if let Some([lx, ly]) = p.last_touch {
+                        let dx = (tx - lx) * 1920.0 * prof.touchpad_sensitivity;
+                        let dy = (ty - ly) * 1080.0 * prof.touchpad_sensitivity;
+                        if dx.abs() > 0.05 || dy.abs() > 0.05 {
+                            #[cfg(windows)]
+                            mouse_win::move_cursor(dx as i32, dy as i32);
+                        }
+                    }
+                    p.last_touch = Some([tx, ty]);
+                    p.last_scroll_y = None;
+
+                    let pad_click = (raw.buttons & buttons::TOUCHPAD) != 0;
+                    if pad_click && !p.mouse_clicked {
+                        p.mouse_clicked = true;
+                        #[cfg(windows)]
+                        mouse_win::click_left(true);
+                    } else if !pad_click && p.mouse_clicked {
+                        p.mouse_clicked = false;
+                        #[cfg(windows)]
+                        mouse_win::click_left(false);
+                    }
+                } else if raw.touch_count == 2 {
+                    let my = (raw.touch[0][1] + raw.touch[1][1]) * 0.5;
+                    if let Some(lmy) = p.last_scroll_y {
+                        let dy = (my - lmy) * 1200.0;
+                        if dy.abs() > 1.0 {
+                            #[cfg(windows)]
+                            mouse_win::scroll((-dy) as i32);
+                        }
+                    }
+                    p.last_scroll_y = Some(my);
+                    p.last_touch = None;
+                    if p.mouse_clicked {
+                        p.mouse_clicked = false;
+                        #[cfg(windows)]
+                        mouse_win::click_left(false);
+                    }
+                } else {
+                    p.last_touch = None;
+                    p.last_scroll_y = None;
+                    if p.mouse_clicked {
+                        p.mouse_clicked = false;
+                        #[cfg(windows)]
+                        mouse_win::click_left(false);
+                    }
+                }
+            }
 
             let mut touch_points = Vec::with_capacity(2);
             for t_idx in 0..raw.touch_count.min(2) as usize {
@@ -1209,7 +1381,7 @@ where
                 right: [rx, ry],
                 trigger_left: lt,
                 trigger_right: rt,
-                buttons: raw.buttons,
+                buttons: buttons_mask,
                 dpad: raw.dpad,
                 touch_points,
                 gyro: raw.gyro,
@@ -1246,8 +1418,21 @@ where
                 q.remove(&p.info.id)
             };
             let pending_rumble = inner.rumble_request.lock().take();
-            if pending_led.is_some() || pending_rumble.is_some() {
-                let led = pending_led.unwrap_or(p.info.led);
+
+            let target_led = if prof.battery_led_mode && raw.battery >= 0 {
+                if raw.battery > 60 {
+                    [0, 230, 80] // Emerald Green
+                } else if raw.battery > 25 {
+                    [240, 180, 0] // Amber
+                } else {
+                    [255, 30, 20] // Red
+                }
+            } else {
+                pending_led.unwrap_or(p.info.led)
+            };
+
+            if pending_led.is_some() || pending_rumble.is_some() || (prof.battery_led_mode && target_led != p.info.led) {
+                let led = target_led;
                 let (w, s) = pending_rumble.unwrap_or((0.0, 0.0));
                 let gain = prof.rumble_intensity.clamp(0.0, 1.0);
                 if let Err(e) = write_output_report(

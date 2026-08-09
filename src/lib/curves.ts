@@ -3,6 +3,7 @@ import type {
   PadProfilePreset,
   StickAxisProfile,
   StickProfileConfig,
+  TriggerProfile,
 } from "./types";
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -68,6 +69,15 @@ export function shapeStick(
   return [axis(x), axis(yy)];
 }
 
+/** Mirror of `shape_trigger` in src-tauri/src/input/gamepad.rs */
+export function shapeTrigger(v: number, p: TriggerProfile): number {
+  const inner = clamp(p.innerDeadzone, 0, 0.8);
+  const outer = clamp(p.outerDeadzone, inner + 0.02, 1);
+  if (v <= inner) return 0;
+  if (p.hairTrigger) return 1;
+  return Math.min((v - inner) / (outer - inner), 1);
+}
+
 export const CURVE_LABELS: Record<CurveKind, string> = {
   linear: "Linear",
   exponential: "Exponential",
@@ -94,11 +104,22 @@ const axis = (o: Partial<StickAxisProfile> = {}): StickAxisProfile => ({
   ...o,
 });
 
+const trigger = (o: Partial<TriggerProfile> = {}): TriggerProfile => ({
+  innerDeadzone: 0.03,
+  outerDeadzone: 0.98,
+  hairTrigger: false,
+  ...o,
+});
+
 export const DEFAULT_PROFILE: StickProfileConfig = {
   left: axis(),
   right: axis(),
-  triggerInner: 0.03,
-  triggerOuter: 0.99,
+  triggerLeft: trigger(),
+  triggerRight: trigger(),
+  flipTriggers: false,
+  touchpadMouse: false,
+  touchpadSensitivity: 1.0,
+  batteryLedMode: false,
   rumbleIntensity: 1,
   turboPolling: true,
 };
@@ -107,7 +128,7 @@ export const PRESETS: PadProfilePreset[] = [
   {
     id: "fps",
     name: "FPS Competitive",
-    tagline: "Tight centre · exponential aim · 12% anti-deadzone",
+    tagline: "Tight centre · exponential aim · hair triggers",
     accent: "from-cyan-400 to-sky-500",
     config: {
       left: axis({
@@ -124,8 +145,20 @@ export const PRESETS: PadProfilePreset[] = [
         curvePower: 1.9,
         sensitivity: 1.1,
       }),
-      triggerInner: 0.02,
-      triggerOuter: 0.92,
+      triggerLeft: trigger({
+        innerDeadzone: 0.02,
+        outerDeadzone: 0.9,
+        hairTrigger: true,
+      }),
+      triggerRight: trigger({
+        innerDeadzone: 0.02,
+        outerDeadzone: 0.9,
+        hairTrigger: true,
+      }),
+      flipTriggers: false,
+      touchpadMouse: false,
+      touchpadSensitivity: 1.0,
+      batteryLedMode: true,
       rumbleIntensity: 0.35,
       turboPolling: true,
     },
@@ -149,8 +182,20 @@ export const PRESETS: PadProfilePreset[] = [
         curve: "sCurve",
         curvePower: 2.2,
       }),
-      triggerInner: 0.05,
-      triggerOuter: 0.98,
+      triggerLeft: trigger({
+        innerDeadzone: 0.05,
+        outerDeadzone: 0.98,
+        hairTrigger: false,
+      }),
+      triggerRight: trigger({
+        innerDeadzone: 0.05,
+        outerDeadzone: 0.98,
+        hairTrigger: false,
+      }),
+      flipTriggers: false,
+      touchpadMouse: true,
+      touchpadSensitivity: 1.0,
+      batteryLedMode: true,
       rumbleIntensity: 1,
       turboPolling: true,
     },
@@ -174,8 +219,20 @@ export const PRESETS: PadProfilePreset[] = [
         curve: "aggressive",
         curvePower: 1.4,
       }),
-      triggerInner: 0.01,
-      triggerOuter: 0.88,
+      triggerLeft: trigger({
+        innerDeadzone: 0.01,
+        outerDeadzone: 0.85,
+        hairTrigger: true,
+      }),
+      triggerRight: trigger({
+        innerDeadzone: 0.01,
+        outerDeadzone: 0.85,
+        hairTrigger: true,
+      }),
+      flipTriggers: false,
+      touchpadMouse: false,
+      touchpadSensitivity: 1.2,
+      batteryLedMode: false,
       rumbleIntensity: 0.15,
       turboPolling: true,
     },

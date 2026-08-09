@@ -4,13 +4,14 @@ import type { InputSnapshot } from "../lib/types";
 
 interface Props {
   getSnapshot: () => InputSnapshot;
+  flipTriggers?: boolean;
 }
 
 /**
  * Imperative, ref-driven telemetry strip: buttons, triggers, touchpad and
  * motion. Updated in a single rAF pass so React never re-renders at 60 Hz.
  */
-export default function LiveTelemetry({ getSnapshot }: Props) {
+export default function LiveTelemetry({ getSnapshot, flipTriggers = false }: Props) {
   const btnRefs = useRef<(HTMLDivElement | null)[]>([]);
   const ltRef = useRef<HTMLDivElement | null>(null);
   const rtRef = useRef<HTMLDivElement | null>(null);
@@ -110,8 +111,18 @@ export default function LiveTelemetry({ getSnapshot }: Props) {
 
       <div className="mt-4 flex items-start gap-4">
         <div className="flex-1 space-y-2.5">
-          <TriggerBar name="L2 → LT" barRef={ltRef} txtRef={ltTxt} color="34,211,238" />
-          <TriggerBar name="R2 → RT" barRef={rtRef} txtRef={rtTxt} color="168,85,247" />
+          <TriggerBar
+            name={flipTriggers ? "L1 → LT (FLIPPED)" : "L2 → LT"}
+            barRef={ltRef}
+            txtRef={ltTxt}
+            color="34,211,238"
+          />
+          <TriggerBar
+            name={flipTriggers ? "R1 → RT (FLIPPED)" : "R2 → RT"}
+            barRef={rtRef}
+            txtRef={rtTxt}
+            color="168,85,247"
+          />
           <div className="pt-1">
             <p className="mb-1 font-mono text-[10px] text-slate-500">GYRO / ACCEL</p>
             <span

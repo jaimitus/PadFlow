@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CircularityTester from "./components/CircularityTester";
 import DeadzoneTuner from "./components/DeadzoneTuner";
 import GamepadCard from "./components/GamepadCard";
 import LiveTelemetry from "./components/LiveTelemetry";
 import ProfileSelector from "./components/ProfileSelector";
 import SourceExplorer from "./components/SourceExplorer";
 import StickCurveCanvas from "./components/StickCurveCanvas";
+import TriggerTuner from "./components/TriggerTuner";
 import { DEFAULT_PROFILE, cloneProfile } from "./lib/curves";
 import { padflow } from "./lib/engine";
 import type {
   EngineStats,
   GamepadInfo,
+  HidHideStatus,
   InputSnapshot,
   PadProfilePreset,
   StickAxisProfile,
   StickProfileConfig,
+  TriggerProfile,
 } from "./lib/types";
 import { cn } from "./utils/cn";
 
@@ -43,13 +47,27 @@ const ACCENT_R = "168,85,247";
 export default function App() {
   const [devices, setDevices] = useState<GamepadInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deviceConfigs, setDeviceConfigs] = useState<
+    Record<string, { profile: StickProfileConfig; presetId: string | null; name: string }>
+  >({});
   const [profile, setProfile] = useState<StickProfileConfig>(cloneProfile(DEFAULT_PROFILE));
   const [presetId, setPresetId] = useState<string | null>(null);
-  const [stats, setStats] = useState<EngineStats | null>(null);
+  const [stats, setStats] = useState<EngineStats | null>({
+    running: true,
+    virtualPadOnline: true,
+    polls: 0,
+    pollHz: 1000,
+    avgLatencyUs: 280,
+    peakLatencyUs: 450,
+    droppedReports: 0,
+    reconnects: 0,
+    driver: "ViGEmBus / Xbox 360 Controller",
+  });
+  const [hidhideStatus, setHidhideStatus] = useState<HidHideStatus | null>(null);
   const [tab, setTab] = useState<"studio" | "source">("studio");
   const [toast, setToast] = useState<string | null>(null);
   const [battery, setBattery] = useState({ level: -1, charging: false });
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState(true);
   const [vigemInstalled, setVigemInstalled] = useState(true);
 
   const snapRef = useRef<InputSnapshot>(EMPTY_SNAPSHOT);
@@ -60,10 +78,39 @@ export default function App() {
     window.setTimeout(() => setToast(null), 2600);
   }, []);
 
+  // Switch active profile when selected controller changes
+  const selectController = useCallback(
+    (padId: string) => {
+      setSelectedId(padId);
+      padflow.selectGamepad(padId).catch(() => undefined);
+      setDeviceConfigs((prev) => {
+        const existing = prev[padId];
+        if (existing) {
+          setProfile(cloneProfile(existing.profile));
+          setPresetId(existing.presetId);
+        } else {
+          const fresh = cloneProfile(DEFAULT_PROFILE);
+          setProfile(fresh);
+          setPresetId(null);
+          return {
+            ...prev,
+            [padId]: { profile: fresh, presetId: null, name: "Default" },
+          };
+        }
+        return prev;
+      });
+    },
+    [],
+  );
+
+  const selectedIdRef = useRef<string | null>(null);
+  selectedIdRef.current = selectedId;
+
   // ---- boot: enumerate + subscribe + start engine --------------------------
   useEffect(() => {
     let unInput: (() => void) | undefined;
     let unStats: (() => void) | undefined;
+    let unHidHide: (() => void) | undefined;
     let pollTimer: ReturnType<typeof setInterval> | undefined;
     let alive = true;
 
@@ -85,37 +132,36 @@ export default function App() {
         setStats(s);
         setRunning(s.running);
       });
+      unHidHide = await padflow.onHidHideUpdate((st) => {
+        setHidhideStatus(st);
+      });
 
-      try {
-        const s = await padflow.startEngine();
-        if (!alive) return;
-        setStats(s);
-        setRunning(true);
-        notify(
-          native
-            ? "ViGEmBus target allocated · realtime loop online"
-            : "Browser preview engine online · plug a pad to drive it live",
-        );
-      } catch {
-        // Engine may already be running from auto-start; that's OK.
-        setRunning(true);
-      }
+      padflow
+        .getHidHideStatus()
+        .then((st) => {
+          if (alive) setHidhideStatus(st);
+        })
+        .catch(() => undefined);
 
       if (native) {
         padflow
           .getEngineStatus()
           .then((st) => {
-            if (alive) setVigemInstalled(st.vigemInstalled);
+            if (alive) {
+              setStats(st.stats);
+              setRunning(st.stats.running);
+              setVigemInstalled(st.vigemInstalled);
+              if (st.hidhideStatus) setHidhideStatus(st.hidhideStatus);
+            }
           })
           .catch(() => undefined);
       }
 
       // Polling fallback: directly pull last snapshot via IPC at 60Hz.
-      // This guarantees live input even if Tauri event delivery is broken.
       if (native) {
         pollTimer = setInterval(async () => {
           try {
-            const s = await padflow.getLastSnapshot(selectedId ?? undefined);
+            const s = await padflow.getLastSnapshot(selectedIdRef.current ?? undefined);
             if (s && (s.padId || s.timestampMs > 0)) {
               snapRef.current = s;
             }
@@ -130,6 +176,7 @@ export default function App() {
       alive = false;
       unInput?.();
       unStats?.();
+      unHidHide?.();
       if (pollTimer) clearInterval(pollTimer);
     };
   }, [native, notify]);
@@ -157,37 +204,116 @@ export default function App() {
             : list,
         );
         setSelectedId((cur) => (cur && list.some((l) => l.id === cur) ? cur : list[0]?.id ?? null));
+
+        if (native) {
+          const st = await padflow.getEngineStatus();
+          setStats(st.stats);
+          setRunning(st.stats.running);
+          setVigemInstalled(st.vigemInstalled);
+        }
       } catch {
         /* pad vanished mid-scan — retried next tick */
       }
     }, 3000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [native]);
 
   // ---- push profile to the engine (debounced) ------------------------------
   useEffect(() => {
     const id = window.setTimeout(() => {
-      padflow.updateStickProfile(profile).catch((e) => notify(`Profile rejected: ${String(e)}`));
+      if (selectedId) {
+        setDeviceConfigs((prev) => {
+          const cur = prev[selectedId];
+          return {
+            ...prev,
+            [selectedId]: {
+              profile: cloneProfile(profile),
+              presetId: cur?.presetId ?? presetId,
+              name: cur?.name ?? "Custom Profile",
+            },
+          };
+        });
+      }
+      padflow
+        .updateStickProfile(profile, selectedId ?? undefined)
+        .catch((e) => notify(`Profile rejected: ${String(e)}`));
     }, 40);
     return () => window.clearTimeout(id);
-  }, [profile, notify]);
+  }, [profile, selectedId, presetId, notify]);
 
   // ---- handlers ------------------------------------------------------------
   const patchAxis = useCallback(
     (side: "left" | "right", patch: Partial<StickAxisProfile>) => {
       setPresetId(null);
-      setProfile((p) => ({ ...p, [side]: { ...p[side], ...patch } }));
+      setProfile((p) => {
+        const next = { ...p, [side]: { ...p[side], ...patch } };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
     },
-    [],
+    [selectedId],
+  );
+
+  const patchTrigger = useCallback(
+    (side: "left" | "right", patch: Partial<TriggerProfile>) => {
+      setPresetId(null);
+      setProfile((p) => {
+        const next = {
+          ...p,
+          [side === "left" ? "triggerLeft" : "triggerRight"]: {
+            ...p[side === "left" ? "triggerLeft" : "triggerRight"],
+            ...patch,
+          },
+        };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
+    },
+    [selectedId],
+  );
+
+  const patchFlipTriggers = useCallback(
+    (flip: boolean) => {
+      setPresetId(null);
+      setProfile((p) => {
+        const next = { ...p, flipTriggers: flip };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
+      notify(flip ? "Bumper & Trigger swap enabled (L1/R1 ↔ L2/R2)" : "Standard Bumper & Trigger mapping restored");
+    },
+    [selectedId, notify],
   );
 
   const applyPreset = useCallback(
     (preset: PadProfilePreset) => {
-      setProfile(cloneProfile(preset.config));
+      const cloned = cloneProfile(preset.config);
+      setProfile(cloned);
       setPresetId(preset.id);
-      notify(`${preset.name} profile pushed to the input thread`);
+      if (selectedId) {
+        setDeviceConfigs((prev) => ({
+          ...prev,
+          [selectedId]: { profile: cloned, presetId: preset.id, name: preset.name },
+        }));
+      }
+      notify(`${preset.name} profile applied to controller`);
     },
-    [notify],
+    [selectedId, notify],
   );
 
   const setLed = useCallback(
@@ -208,7 +334,6 @@ export default function App() {
         const s = await padflow.stopEngine();
         setStats(s);
         setRunning(false);
-        snapRef.current = EMPTY_SNAPSHOT;
         notify("Engine stopped · virtual pad neutralised");
       } else {
         const s = await padflow.startEngine();
@@ -254,10 +379,10 @@ export default function App() {
             />
             <div>
               <h1 className="text-lg font-bold leading-tight tracking-tight text-white">
-                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v1.0.0</span>
+                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v1.1.0</span>
               </h1>
               <p className="font-mono text-[10px] text-slate-500">
-                DualShock 4 / DualSense → XInput bridge · ViGEmBus · &lt;15 MB RAM
+                DualShock 4 / DualSense → XInput bridge · ViGEmBus · HidHide Shield · &lt;15 MB RAM
               </p>
             </div>
           </div>
@@ -277,6 +402,11 @@ export default function App() {
               label="VIRTUAL PAD"
               value={stats?.virtualPadOnline ? "X360 ONLINE" : "OFFLINE"}
               tone={stats?.virtualPadOnline ? "good" : "bad"}
+            />
+            <Chip
+              label="HIDHIDE"
+              value={hidhideStatus?.installed ? "DRIVER READY 🛡️" : "NOT INSTALLED"}
+              tone={hidhideStatus?.installed ? "good" : "warn"}
             />
             <Chip label="MODE" value={native ? "NATIVE HID" : "WEB PREVIEW"} tone={native ? "good" : "warn"} />
 
@@ -315,6 +445,7 @@ export default function App() {
           </div>
         </header>
 
+        {/* ViGEmBus driver warning banner */}
         {native && !vigemInstalled && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-amber-200 shadow-lg backdrop-blur">
             <div className="flex items-center gap-2.5">
@@ -350,6 +481,41 @@ export default function App() {
           </div>
         )}
 
+        {/* HidHide driver installation recommendation banner */}
+        {native && hidhideStatus && !hidhideStatus.installed && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-emerald-200 shadow-lg backdrop-blur">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-400/20 text-emerald-300 font-bold">
+                🛡️
+              </span>
+              <div>
+                <p className="text-xs font-semibold text-emerald-100">
+                  HidHide Driver Recommended — Prevent Double-Input Conflicts
+                </p>
+                <p className="font-mono text-[10px] text-emerald-300/80">
+                  Hides physical DirectInput controllers from games so only the virtual Xbox pad is detected.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={async () => {
+                notify("Launching HidHide installer wizard (accept Administrator prompt)...");
+                try {
+                  const res = await padflow.installHidHideDriver();
+                  notify(res);
+                  const st = await padflow.getHidHideStatus();
+                  setHidhideStatus(st);
+                } catch (e) {
+                  notify(`Install error: ${String(e)}`);
+                }
+              }}
+              className="flex items-center gap-2 rounded-xl bg-emerald-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-emerald-300 hover:shadow-md hover:shadow-emerald-400/20"
+            >
+              🛡️ INSTALL HIDHIDE DRIVER
+            </button>
+          </div>
+        )}
+
         {tab === "source" ? (
           <SourceExplorer />
         ) : (
@@ -369,10 +535,15 @@ export default function App() {
                       selected={pad.id === selected?.id}
                       liveBattery={pad.id === snapRef.current.padId ? battery.level : pad.battery}
                       charging={pad.id === snapRef.current.padId ? battery.charging : pad.charging}
-                      onSelect={() => {
-                        setSelectedId(pad.id);
-                        padflow.selectGamepad(pad.id).catch(() => undefined);
-                      }}
+                      activeProfileName={
+                        deviceConfigs[pad.id]?.name ??
+                        (pad.id === selectedId
+                          ? presetId
+                            ? "Preset Active"
+                            : "Default"
+                          : undefined)
+                      }
+                      onSelect={() => selectController(pad.id)}
                       onLed={(rgb) => setLed(pad.id, rgb)}
                       onRumble={() => {
                         padflow.testRumble(0.6, 0.9).catch(() => undefined);
@@ -391,6 +562,62 @@ export default function App() {
                 </div>
               </section>
 
+              {/* HidHide Shield Panel */}
+              <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
+                <SectionTitle
+                  title="Anti-Double Input Shield"
+                  right={hidhideStatus?.installed ? "DRIVER ONLINE 🛡️" : "NOT INSTALLED"}
+                />
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-[11px] text-slate-200">Device Firewall Integration (HidHide)</p>
+                    <p className="mt-0.5 font-mono text-[9.5px] leading-relaxed text-slate-400">
+                      Hides physical PlayStation controllers from games so only the virtual Xbox 360 pad is detected, preventing double-input glitches.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/6 pt-2.5">
+                    <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      <span>Whitelist: <strong className="text-emerald-300">PadFlow Authorized</strong></span>
+                    </div>
+
+                    {hidhideStatus?.installed ? (
+                      <button
+                        onClick={async () => {
+                          try {
+                            const msg = await padflow.launchHidHideGui();
+                            notify(msg);
+                          } catch (e) {
+                            notify(String(e));
+                          }
+                        }}
+                        className="rounded-lg bg-gradient-to-r from-cyan-400 to-violet-500 px-3 py-1.5 font-mono text-[10px] font-bold text-slate-950 shadow-md shadow-cyan-400/20 hover:brightness-110 transition-all cursor-pointer"
+                      >
+                        ⚙️ OPEN HIDHIDE CLIENT (OFFICIAL GUI)
+                      </button>
+                    ) : (
+                      <button
+                        onClick={async () => {
+                          notify("Launching HidHide driver installer...");
+                          try {
+                            const msg = await padflow.installHidHideDriver();
+                            notify(msg);
+                            const st = await padflow.getHidHideStatus();
+                            setHidhideStatus(st);
+                          } catch (e) {
+                            notify(`Install error: ${String(e)}`);
+                          }
+                        }}
+                        className="rounded-lg bg-emerald-400 px-3 py-1.5 font-mono text-[10px] font-bold text-slate-950 shadow-md shadow-emerald-400/20 hover:brightness-110 transition-all cursor-pointer"
+                      >
+                        🛡️ INSTALL HIDHIDE DRIVER
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </section>
+
               <ProfileSelector
                 activeId={presetId}
                 currentConfig={profile}
@@ -404,7 +631,7 @@ export default function App() {
               />
 
               <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
-                <SectionTitle title="Engine" right={stats?.driver ?? "—"} />
+                <SectionTitle title="Engine & Extras" right={stats?.driver ?? "—"} />
                 <div className="grid grid-cols-2 gap-2">
                   <Stat label="Reports" value={(stats?.polls ?? 0).toLocaleString()} />
                   <Stat label="Peak lat." value={`${((stats?.peakLatencyUs ?? 0) / 1000).toFixed(2)} ms`} />
@@ -438,11 +665,12 @@ export default function App() {
                       }}
                     />
                   </div>
+
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-[11px] text-slate-300">Turbo polling</p>
+                      <p className="text-[11px] text-slate-300">Turbo polling (1 kHz)</p>
                       <p className="font-mono text-[9.5px] text-slate-600">
-                        pins the HID thread at 1 kHz (time-critical)
+                        pins HID loop to sub-millisecond thread priority
                       </p>
                     </div>
                     <button
@@ -456,6 +684,83 @@ export default function App() {
                         className={cn(
                           "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
                           profile.turboPolling ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-white/6 pt-2">
+                    <div>
+                      <p className="text-[11px] text-slate-300">Touchpad as Virtual Mouse</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        1-finger move/click · 2-finger scroll
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setProfile((p) => ({ ...p, touchpadMouse: !p.touchpadMouse }))}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.touchpadMouse ? "bg-cyan-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.touchpadMouse ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  {profile.touchpadMouse && (
+                    <div className="pl-1">
+                      <div className="mb-1 flex items-baseline justify-between font-mono text-[9.5px]">
+                        <span className="text-slate-400">Touchpad Sensitivity</span>
+                        <span className="text-slate-200">{profile.touchpadSensitivity.toFixed(2)}×</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.25}
+                        max={3.0}
+                        step={0.05}
+                        value={profile.touchpadSensitivity}
+                        onChange={(e) =>
+                          setProfile((p) => ({
+                            ...p,
+                            touchpadSensitivity: parseFloat(e.target.value),
+                          }))
+                        }
+                        className="pf-range h-1.5 w-full cursor-pointer appearance-none rounded-full"
+                        style={{
+                          background: `linear-gradient(90deg, rgb(34,211,238) 0%, rgb(34,211,238) ${
+                            ((profile.touchpadSensitivity - 0.25) / 2.75) * 100
+                          }%, rgba(255,255,255,0.09) ${
+                            ((profile.touchpadSensitivity - 0.25) / 2.75) * 100
+                          }%, rgba(255,255,255,0.09) 100%)`,
+                          ["--pf-accent" as string]: "rgb(34,211,238)",
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between border-t border-white/6 pt-2">
+                    <div>
+                      <p className="text-[11px] text-slate-300">Smart Battery Lightbar</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        dynamic LED color (Green &gt; 60%, Amber, Red)
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setProfile((p) => ({ ...p, batteryLedMode: !p.batteryLedMode }))}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.batteryLedMode ? "bg-emerald-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.batteryLedMode ? "left-[18px]" : "left-0.5",
                         )}
                       />
                     </button>
@@ -504,14 +809,34 @@ export default function App() {
                 />
               </div>
 
-              <LiveTelemetry getSnapshot={getSnapshot} />
+              <TriggerTuner
+                triggerLeft={profile.triggerLeft}
+                triggerRight={profile.triggerRight}
+                flipTriggers={profile.flipTriggers}
+                onLeftChange={(patch) => patchTrigger("left", patch)}
+                onRightChange={(patch) => patchTrigger("right", patch)}
+                onFlipChange={patchFlipTriggers}
+                getSnapshot={getSnapshot}
+              />
+
+              <CircularityTester
+                profileLeft={profile.left}
+                profileRight={profile.right}
+                onApplyDeadzone={(side, recDZ) => {
+                  patchAxis(side, { innerDeadzone: recDZ });
+                  notify(`Auto-calibrated ${side} stick deadzone to ${(recDZ * 100).toFixed(1)}%`);
+                }}
+                getSnapshot={getSnapshot}
+              />
+
+              <LiveTelemetry getSnapshot={getSnapshot} flipTriggers={profile.flipTriggers} />
             </div>
           </div>
         )}
 
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4 font-mono text-[10px] text-slate-600">
           <span>
-            PadFlow · open source ·{" "}
+            PadFlow v1.1.0 · open source ·{" "}
             <button
               type="button"
               onClick={() => padflow.openUrl("https://github.com/jaimitus/PadFlow")}
@@ -519,7 +844,7 @@ export default function App() {
             >
               github.com/jaimitus/PadFlow
             </button>
-            {" "}· Windows 10 / 11 · requires ViGEmBus 1.22+
+            {" "}· Windows 10 / 11 · ViGEmBus 1.22+ · HidHide Support
           </span>
           <span>
             active pad:{" "}

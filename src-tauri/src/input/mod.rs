@@ -8,5 +8,5 @@ pub mod gamepad;
 
 pub use gamepad::{
     ConnectionType, CurveKind, EngineStats, GamepadInfo, InputSnapshot, PadFlowEngine, PadKind,
-    StickAxisProfile, StickProfileConfig,
+    StickAxisProfile, StickProfileConfig, TriggerProfile, shape_stick, shape_trigger,
 };

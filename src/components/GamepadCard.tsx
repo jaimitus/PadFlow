@@ -7,6 +7,7 @@ interface Props {
   selected: boolean;
   liveBattery: number;
   charging: boolean;
+  activeProfileName?: string;
   onSelect: () => void;
   onLed: (rgb: [number, number, number]) => void;
   onRumble: () => void;
@@ -35,6 +36,7 @@ export default function GamepadCard({
   selected,
   liveBattery,
   charging,
+  activeProfileName,
   onSelect,
   onLed,
   onRumble,
@@ -77,8 +79,11 @@ export default function GamepadCard({
               {pad.connection === "usb" ? "USB · WIRED" : "BLUETOOTH"}
             </Tag>
             <Tag>{pad.reportRateHz} Hz</Tag>
-            {pad.hasGyro && <Tag>GYRO</Tag>}
-            {pad.hasTouchpad && <Tag>TOUCHPAD</Tag>}
+            {activeProfileName && (
+              <Tag className="border-cyan-400/30 bg-cyan-400/10 text-cyan-200 font-bold">
+                🎯 {activeProfileName}
+              </Tag>
+            )}
           </div>
         </div>
         <span
@@ -87,7 +92,7 @@ export default function GamepadCard({
             selected ? "bg-cyan-400/20 text-cyan-200" : "bg-white/5 text-slate-400",
           )}
         >
-          {selected ? "mapped" : "idle"}
+          {selected ? "active slot" : "mapped"}
         </span>
       </div>
 
@@ -108,11 +113,11 @@ export default function GamepadCard({
         </div>
       </div>
 
-      {/* lightbar */}
+      {/* lightbar & actions */}
       {pad.hasLightbar && (
         <div className="relative mt-4" onClick={(e) => e.stopPropagation()}>
           <div className="mb-2 flex items-center justify-between font-mono text-[10px] text-slate-400">
-            <span>LIGHTBAR</span>
+            <span>LIGHTBAR RGB</span>
             <span className="text-slate-300">{hex(rgb).toUpperCase()}</span>
           </div>
           <div
@@ -140,6 +145,7 @@ export default function GamepadCard({
                 className="absolute inset-0 cursor-pointer opacity-0"
               />
             </label>
+
             <button
               onClick={onRumble}
               className="ml-auto rounded-md border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[10px] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"

@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::hidhide::{self, HidHideStatus};
 use crate::input::gamepad::{
     apply_curve, shape_stick, CurveKind, EngineStats, GamepadInfo, InputSnapshot,
-    StickAxisProfile, StickProfileConfig,
+    StickAxisProfile, StickProfileConfig, TriggerProfile,
 };
 use crate::AppState;
 
@@ -23,8 +24,10 @@ use crate::AppState;
 pub struct EngineStatus {
     pub stats: EngineStats,
     pub profile: StickProfileConfig,
+    pub device_profiles: std::collections::HashMap<String, StickProfileConfig>,
     pub devices: Vec<GamepadInfo>,
     pub vigem_installed: bool,
+    pub hidhide_status: HidHideStatus,
     pub version: String,
 }
 
@@ -74,17 +77,41 @@ pub fn set_led_color(
 #[tauri::command]
 pub fn update_stick_profile(
     profile_data: StickProfileConfig,
+    pad_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<StickProfileConfig, String> {
     validate_axis("left", &profile_data.left)?;
     validate_axis("right", &profile_data.right)?;
+    validate_trigger("triggerLeft", &profile_data.trigger_left)?;
+    validate_trigger("triggerRight", &profile_data.trigger_right)?;
     if !(0.0..=1.0).contains(&profile_data.rumble_intensity) {
         return Err("rumble_intensity must be within 0.0..=1.0".into());
     }
-    state.engine.set_profile(profile_data);
-    let _ = app.emit("padflow-profile-updated", profile_data);
+    if profile_data.touchpad_sensitivity < 0.1 || profile_data.touchpad_sensitivity > 5.0 {
+        return Err("touchpad_sensitivity must be within 0.1..=5.0".into());
+    }
+    state.engine.set_profile_for(pad_id.as_deref(), profile_data);
+    let _ = app.emit(
+        "padflow-profile-updated",
+        serde_json::json!({
+            "padId": pad_id,
+            "profile": profile_data,
+        }),
+    );
     Ok(profile_data)
+}
+
+fn validate_trigger(name: &str, t: &TriggerProfile) -> Result<(), String> {
+    if t.inner_deadzone < 0.0 || t.inner_deadzone > 0.8 {
+        return Err(format!("{name}.inner_deadzone must be within 0.0..=0.8"));
+    }
+    if t.outer_deadzone <= t.inner_deadzone || t.outer_deadzone > 1.0 {
+        return Err(format!(
+            "{name}.outer_deadzone must be greater than inner deadzone and <= 1.0"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_axis(name: &str, a: &StickAxisProfile) -> Result<(), String> {
@@ -109,43 +136,56 @@ fn validate_axis(name: &str, a: &StickAxisProfile) -> Result<(), String> {
 }
 
 /// Allocates the ViGEm virtual Xbox 360 target and starts the realtime loop.
-/// Streams `padflow-input-update` to the webview at 60 Hz.
-#[tauri::command]
-pub fn start_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result<EngineStats, String> {
-    if state.engine.is_running() {
-        return Ok(state.engine.stats());
+/// Streams `padflow-input-update` to the webview at 60 Hz and heartbeat at 4 Hz.
+pub fn run_engine_with_telemetry(
+    engine: &crate::input::gamepad::PadFlowEngine,
+    app: &AppHandle,
+) -> Result<EngineStats, String> {
+    if !engine.is_running() {
+        let _ = engine.rescan();
+        let sink = app.clone();
+        engine.spawn(move |snapshot: InputSnapshot| {
+            let _ = sink.emit("padflow-input-update", snapshot);
+        })?;
     }
-    let _ = state.engine.rescan();
-    let sink = app.clone();
-    state.engine.spawn(move |snapshot: InputSnapshot| {
-        let _ = sink.emit("padflow-input-update", snapshot);
-    })?;
 
     // Telemetry heartbeat: 4 Hz, cheap, keeps the header widgets honest.
-    let engine = state.engine.clone();
+    let engine_clone = engine.clone();
     let beat = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         loop {
             tick.tick().await;
-            if !engine.is_running() {
-                let _ = beat.emit("padflow-engine-stats", engine.stats());
+            let st = engine_clone.stats();
+            let _ = beat.emit("padflow-engine-stats", st.clone());
+            if !st.running {
                 break;
             }
-            let _ = beat.emit("padflow-engine-stats", engine.stats());
         }
     });
 
-    let _ = app.emit("padflow-engine-started", state.engine.stats());
-    Ok(state.engine.stats())
+    let stats = engine.stats();
+    let _ = app.emit("padflow-engine-started", stats.clone());
+    let _ = app.emit("padflow-engine-stats", stats.clone());
+    Ok(stats)
+}
+
+/// Allocates the ViGEm virtual Xbox 360 target and starts the realtime loop.
+/// Streams `padflow-input-update` to the webview at 60 Hz.
+#[tauri::command]
+pub fn start_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result<EngineStats, String> {
+    run_engine_with_telemetry(&state.engine, &app)
 }
 
 /// Stops the loop and unplugs the virtual pad (neutralised first).
 #[tauri::command]
 pub fn stop_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result<EngineStats, String> {
     state.engine.stop();
+    let _ = hidhide::uncloak_all_controllers();
     let stats = state.engine.stats();
     let _ = app.emit("padflow-engine-stopped", stats.clone());
+    let _ = app.emit("padflow-engine-stats", stats.clone());
+    let _ = app.emit("padflow-hidhide-updated", hidhide::get_status());
     Ok(stats)
 }
 
@@ -156,10 +196,79 @@ pub fn get_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, Str
     Ok(EngineStatus {
         stats: state.engine.stats(),
         profile: state.engine.profile(),
+        device_profiles: state.engine.all_profiles(),
         devices,
         vigem_installed: vigem_client::Client::connect().is_ok(),
+        hidhide_status: hidhide::get_status(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+/// Returns current HidHide device firewall status.
+#[tauri::command]
+pub fn get_hidhide_status() -> Result<HidHideStatus, String> {
+    Ok(hidhide::get_status())
+}
+
+/// Enables or disables HidHide device hiding globally.
+#[tauri::command]
+pub fn set_hidhide_active(active: bool, app: AppHandle) -> Result<HidHideStatus, String> {
+    hidhide::set_active(active)?;
+    let status = hidhide::get_status();
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Hides or unhides a physical controller from non-whitelisted applications.
+#[tauri::command]
+pub fn toggle_device_hide(
+    device_path: String,
+    hide: bool,
+    app: AppHandle,
+) -> Result<HidHideStatus, String> {
+    if hide {
+        hidhide::hide_device(&device_path)?;
+    } else {
+        hidhide::unhide_device(&device_path)?;
+    }
+    let status = hidhide::get_status();
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Cloaks all currently connected PlayStation / HID controllers automatically.
+#[tauri::command]
+pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Result<HidHideStatus, String> {
+    let _ = state.engine.rescan();
+    let devices = state.engine.devices();
+    let _ = hidhide::auto_whitelist_current_process();
+    for dev in devices {
+        let _ = hidhide::hide_device(&dev.path);
+    }
+    let _ = hidhide::set_active(true);
+    let status = hidhide::get_status();
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Uncloaks all controllers and restores visibility to all games and apps.
+#[tauri::command]
+pub fn uncloak_all_controllers(app: AppHandle) -> Result<HidHideStatus, String> {
+    let status = hidhide::uncloak_all_controllers()?;
+    let _ = app.emit("padflow-hidhide-updated", status.clone());
+    Ok(status)
+}
+
+/// Opens the official Nefarius HidHide Configuration Client GUI.
+#[tauri::command]
+pub fn launch_hidhide_gui() -> Result<String, String> {
+    hidhide::launch_hidhide_gui()
+}
+
+/// Launches the HidHide driver installer with UAC Administrator privileges.
+#[tauri::command]
+pub fn install_hidhide_driver(app: AppHandle) -> Result<String, String> {
+    hidhide::install_hidhide_driver(&app)
 }
 
 /// Selects the active gamepad for UI stream and calibration canvas.
@@ -237,6 +346,7 @@ pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
         return Err("invalid URL scheme".into());
     }
     use tauri_plugin_shell::ShellExt;
+    #[allow(deprecated)]
     app.shell().open(url, None).map_err(|e| e.to_string())
 }
 

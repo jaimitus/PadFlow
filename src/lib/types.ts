@@ -41,11 +41,21 @@ export interface StickAxisProfile {
   radial: boolean;
 }
 
+export interface TriggerProfile {
+  innerDeadzone: number;
+  outerDeadzone: number;
+  hairTrigger: boolean;
+}
+
 export interface StickProfileConfig {
   left: StickAxisProfile;
   right: StickAxisProfile;
-  triggerInner: number;
-  triggerOuter: number;
+  triggerLeft: TriggerProfile;
+  triggerRight: TriggerProfile;
+  flipTriggers: boolean;
+  touchpadMouse: boolean;
+  touchpadSensitivity: number;
+  batteryLedMode: boolean;
   rumbleIntensity: number;
   turboPolling: boolean;
 }
@@ -70,6 +80,14 @@ export interface InputSnapshot {
   timestampMs: number;
 }
 
+export interface HidHideStatus {
+  installed: boolean;
+  active: boolean;
+  whitelisted: boolean;
+  hiddenDevices: string[];
+  appPath: string;
+}
+
 export interface EngineStats {
   running: boolean;
   virtualPadOnline: boolean;
@@ -85,8 +103,10 @@ export interface EngineStats {
 export interface EngineStatus {
   stats: EngineStats;
   profile: StickProfileConfig;
+  deviceProfiles: Record<string, StickProfileConfig>;
   devices: GamepadInfo[];
   vigemInstalled: boolean;
+  hidhideStatus: HidHideStatus;
   version: string;
 }
 
