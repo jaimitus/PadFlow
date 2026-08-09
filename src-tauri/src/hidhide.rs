@@ -628,25 +628,6 @@ pub mod win {
             }
         }
     }
-
-    /// Silently disables and re-enables connected Sony gamepads via PnP in 50ms so Windows immediately
-    /// applies HidHide filtering without requiring the user to physically unplug the USB cable.
-    pub fn restart_gamepad_pnp_devices() {
-        let ps_cmd = r#"
-        $devs = Get-PnpDevice | Where-Object { ($_.InstanceId -like "*VID_054C*") -or ($_.FriendlyName -like "*Wireless Controller*") -or ($_.FriendlyName -like "*DualSense*") }
-        foreach ($d in $devs) {
-            try {
-                Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 40
-                Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
-            } catch {}
-        }
-        "#;
-
-        let mut cmd = std::process::Command::new("powershell");
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        let _ = cmd.args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd]).status();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -813,7 +794,6 @@ pub fn hide_device(raw_path: &str) -> Result<(), String> {
             let _ = win::reg_set_active(true);
         }
 
-        win::restart_gamepad_pnp_devices();
         Ok(())
     }
     #[cfg(not(windows))]
@@ -844,7 +824,6 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
             }
         }
 
-        win::restart_gamepad_pnp_devices();
         Ok(())
     }
     #[cfg(not(windows))]
@@ -863,7 +842,6 @@ pub fn set_active(active: bool) -> Result<(), String> {
             let _ = win::reg_set_active(active);
         }
 
-        win::restart_gamepad_pnp_devices();
         Ok(())
     }
     #[cfg(not(windows))]
@@ -878,13 +856,11 @@ pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
     {
         if let Ok(handle) = win::HidHideHandle::open() {
             handle.set_blacklist(&[]);
-            handle.set_active(false);
+            let _ = handle.set_active(false);
         } else {
             let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[]);
             let _ = win::reg_set_active(false);
         }
-
-        win::restart_gamepad_pnp_devices();
     }
     Ok(get_status())
 }
