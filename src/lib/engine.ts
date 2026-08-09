@@ -1,4 +1,5 @@
 import { DEFAULT_PROFILE, shapeStick, shapeTrigger, clamp01 } from "./curves";
+import { APP_VERSION } from "./version";
 import type {
   ConnectionType,
   EngineStats,
@@ -568,7 +569,7 @@ export const padflow = {
       devices: web.devices(),
       vigemInstalled: true,
       hidhideStatus: web.hidhideStatus(),
-      version: "1.1.0",
+      version: APP_VERSION,
     };
   },
 };

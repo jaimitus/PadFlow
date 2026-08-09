@@ -339,6 +339,18 @@ pub fn toggle_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Restarts PadFlow after a successful in-app update.
+#[tauri::command]
+pub fn relaunch_app(app: AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe)
+        .spawn()
+        .map_err(|e| format!("failed to relaunch: {e}"))?;
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    app.exit(0);
+    Ok(())
+}
+
 /// Opens an external HTTP/HTTPS URL in the system default browser.
 #[tauri::command]
 pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {

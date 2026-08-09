@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PadFlow",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "identifier": "dev.padflow.app",
   "build": {
     "frontendDist": "../dist",
@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "createUpdaterArtifacts": true,
     "resources": ["resources/*"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
     "windows": {
@@ -42,5 +43,16 @@
     },
     "shortDescription": "Ultra low-latency DualShock 4 / DualSense to XInput bridge & HidHide shield",
     "longDescription": "PadFlow converts PS4 and PS5 controllers into virtual Xbox pads via ViGEmBus with sub-millisecond latency, visual stick response curves, lightbar control and HidHide anti-double-input protection."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3NDYyODZFMUE2OTk2NDIKUldSQ2xta2FiaWhHNTFzQUxEbGx1dFM1azgzNUtRUnp5T0tRKy9KQmJVUmNmNGpjdFlCTEVBaHIK",
+      "endpoints": [
+        "https://github.com/jaimitus/PadFlow/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

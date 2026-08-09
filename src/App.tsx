@@ -9,6 +9,8 @@ import StickCurveCanvas from "./components/StickCurveCanvas";
 import TriggerTuner from "./components/TriggerTuner";
 import { DEFAULT_PROFILE, cloneProfile } from "./lib/curves";
 import { padflow } from "./lib/engine";
+import { installUpdate, relaunchApp, checkForUpdates } from "./lib/updater";
+import { APP_VERSION, type UpdateInfo } from "./lib/version";
 import type {
   EngineStats,
   GamepadInfo,
@@ -70,6 +72,22 @@ export default function App() {
   const [running, setRunning] = useState(true);
   const [vigemInstalled, setVigemInstalled] = useState(true);
 
+  // ---- update checker state -------------------------------------------------
+  const [updateState, setUpdateState] = useState<
+    "idle" | "checking" | "available" | "up-to-date" | "error"
+  >("idle");
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installed, setInstalled] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<{
+    downloaded: number;
+    total: number;
+  } | null>(null);
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(() =>
+    localStorage.getItem("padflow-dismissed-update"),
+  );
+
   const snapRef = useRef<InputSnapshot>(EMPTY_SNAPSHOT);
   const native = padflow.mode() === "native";
 
@@ -77,6 +95,73 @@ export default function App() {
     setToast(msg);
     window.setTimeout(() => setToast(null), 2600);
   }, []);
+
+  // ---- update checking ------------------------------------------------------
+  const runUpdateCheck = useCallback(
+    async (respectDismissed = false) => {
+      if (updateState === "checking" || installing) return;
+      setUpdateState("checking");
+      const res = await checkForUpdates();
+      if (res.state === "available" && res.info) {
+        setUpdateInfo(res.info);
+        setUpdateState("available");
+        setInstalled(false);
+        if (!respectDismissed || res.info.version !== dismissedVersion) {
+          setUpdateModalOpen(true);
+        }
+      } else if (res.state === "up-to-date") {
+        setUpdateState("up-to-date");
+        if (!respectDismissed) notify("You're running the latest version 🎉");
+      } else {
+        setUpdateState("error");
+        if (!respectDismissed) {
+          notify(`Update check failed: ${res.error ?? "unknown error"}`);
+        }
+      }
+    },
+    [dismissedVersion, installing, notify, updateState],
+  );
+
+  // Silent background check a few seconds after launch — pops the modal if a
+  // new release has been published on GitHub.
+  useEffect(() => {
+    const t = window.setTimeout(() => runUpdateCheck(true), 4000);
+    return () => window.clearTimeout(t);
+  }, [runUpdateCheck]);
+
+  const handleInstall = useCallback(async () => {
+    if (!updateInfo || installing) return;
+    setInstalling(true);
+    setUpdateProgress(null);
+    try {
+      await installUpdate((downloaded, total) =>
+        setUpdateProgress({ downloaded, total }),
+      );
+      setInstalled(true);
+      notify(`v${updateInfo.version} installed — restart to finish`);
+    } catch (e) {
+      notify(`Install failed: ${String(e)}`);
+    } finally {
+      setInstalling(false);
+    }
+  }, [installing, notify, updateInfo]);
+
+  const handleRestart = useCallback(async () => {
+    try {
+      await relaunchApp();
+    } catch (e) {
+      notify(`Could not restart: ${String(e)}`);
+    }
+  }, [notify]);
+
+  const handleDismissUpdate = useCallback(() => {
+    setUpdateModalOpen(false);
+    if (updateInfo) {
+      localStorage.setItem("padflow-dismissed-update", updateInfo.version);
+      setDismissedVersion(updateInfo.version);
+      notify("Update reminder hidden — you can check again anytime");
+    }
+  }, [notify, updateInfo]);
 
   // Switch active profile when selected controller changes
   const selectController = useCallback(
@@ -379,7 +464,7 @@ export default function App() {
             />
             <div>
               <h1 className="text-lg font-bold leading-tight tracking-tight text-white">
-                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v1.1.0</span>
+                PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v{APP_VERSION}</span>
               </h1>
               <p className="font-mono text-[10px] text-slate-500">
                 DualShock 4 / DualSense → XInput bridge · ViGEmBus · HidHide Shield · &lt;15 MB RAM
@@ -409,6 +494,36 @@ export default function App() {
               tone={hidhideStatus?.installed ? "good" : "warn"}
             />
             <Chip label="MODE" value={native ? "NATIVE HID" : "WEB PREVIEW"} tone={native ? "good" : "warn"} />
+
+            <button
+              onClick={() => runUpdateCheck(false)}
+              disabled={updateState === "checking" || installing}
+              title="Check GitHub for a new PadFlow release"
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border px-3 py-2 font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer",
+                updateState === "available"
+                  ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200 hover:bg-cyan-400/20 hover:shadow-md hover:shadow-cyan-400/10"
+                  : "border-white/10 bg-white/5 text-slate-400 hover:border-white/25 hover:text-white",
+                (updateState === "checking" || installing) && "opacity-60 cursor-wait",
+              )}
+            >
+              <span
+                className={cn(
+                  "text-[11px] leading-none",
+                  updateState === "checking" && "animate-spin",
+                )}
+              >
+                {updateState === "checking" ? "◌" : "⬆"}
+              </span>
+              {updateState === "checking"
+                ? "Checking…"
+                : updateState === "available"
+                  ? `Update v${updateInfo?.version} ready`
+                  : "Check update"}
+              {updateState === "available" && (
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 pf-live-dot" />
+              )}
+            </button>
 
             <div className="ml-1 flex rounded-lg border border-white/8 bg-white/5 p-0.5">
               {(["studio", "source"] as const).map((t) => (
@@ -836,7 +951,7 @@ export default function App() {
 
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4 font-mono text-[10px] text-slate-600">
           <span>
-            PadFlow v1.1.0 · open source ·{" "}
+            PadFlow v{APP_VERSION} · open source ·{" "}
             <button
               type="button"
               onClick={() => padflow.openUrl("https://github.com/jaimitus/PadFlow")}
@@ -852,6 +967,112 @@ export default function App() {
           </span>
         </footer>
       </div>
+
+      {/* ---------- update available modal ---------- */}
+      {updateModalOpen && updateInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => !installing && setUpdateModalOpen(false)}
+          />
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-cyan-400/25 bg-[#0a0e18] shadow-[0_0_70px_-12px] shadow-cyan-400/25">
+            <div className="pointer-events-none absolute -top-24 left-1/2 h-48 w-72 -translate-x-1/2 rounded-full bg-cyan-400/15 blur-[70px]" />
+            <div className="relative p-5">
+              <div className="flex items-start gap-3">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 to-violet-500 text-lg text-slate-950 shadow-lg shadow-cyan-400/25">
+                  ⬆
+                </span>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold uppercase tracking-[0.18em] text-white">
+                    Update available
+                  </h3>
+                  <p className="mt-0.5 font-mono text-[11px] text-cyan-300">
+                    PadFlow v{APP_VERSION} → v{updateInfo.version}
+                  </p>
+                </div>
+              </div>
+
+              {updateInfo.notes ? (
+                <div className="mt-4 max-h-44 overflow-y-auto rounded-xl border border-white/8 bg-white/[0.02] p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-300">
+                  {updateInfo.notes}
+                </div>
+              ) : (
+                <p className="mt-4 text-[11px] text-slate-500">
+                  A new PadFlow release is published on GitHub.
+                </p>
+              )}
+
+              {installing && (
+                <div className="mt-4">
+                  <div className="mb-1 flex items-center justify-between font-mono text-[9.5px] text-slate-400">
+                    <span>{installed ? "Applying update…" : "Downloading update…"}</span>
+                    <span>
+                      {updateProgress && updateProgress.total > 0
+                        ? `${Math.min(100, Math.round((updateProgress.downloaded / updateProgress.total) * 100))}% · ${(updateProgress.downloaded / 1048576).toFixed(1)}/${(updateProgress.total / 1048576).toFixed(1)} MB`
+                        : "…"}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/8">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500 transition-all duration-150"
+                      style={{
+                        width: `${
+                          updateProgress && updateProgress.total > 0
+                            ? Math.min(100, (updateProgress.downloaded / updateProgress.total) * 100)
+                            : installing
+                              ? 6
+                              : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                {!installing && (
+                  <>
+                    {installed ? (
+                      <button
+                        onClick={handleRestart}
+                        className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-400 to-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-md shadow-emerald-400/20 transition-all hover:brightness-110"
+                      >
+                        🔄 Restart PadFlow now
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={handleInstall}
+                          className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-md shadow-cyan-400/20 transition-all hover:brightness-110"
+                        >
+                          ⬇ Download &amp; install
+                        </button>
+                        <button
+                          onClick={() => padflow.openUrl(updateInfo.url).catch(() => undefined)}
+                          className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-semibold text-slate-300 transition-colors hover:border-white/25 hover:text-white"
+                        >
+                          View release
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={handleDismissUpdate}
+                      className="rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-500 transition-colors hover:text-slate-300"
+                    >
+                      {installed ? "Later" : "Not now"}
+                    </button>
+                  </>
+                )}
+                {installing && !installed && (
+                  <span className="font-mono text-[9.5px] text-slate-500">
+                    Keep PadFlow open while the update installs…
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-cyan-400/30 bg-slate-950/95 px-4 py-2.5 font-mono text-[11px] text-cyan-100 shadow-2xl backdrop-blur">
