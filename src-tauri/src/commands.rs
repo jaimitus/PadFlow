@@ -136,35 +136,45 @@ fn validate_axis(name: &str, a: &StickAxisProfile) -> Result<(), String> {
 }
 
 /// Allocates the ViGEm virtual Xbox 360 target and starts the realtime loop.
-/// Streams `padflow-input-update` to the webview at 60 Hz.
-#[tauri::command]
-pub fn start_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result<EngineStats, String> {
-    if state.engine.is_running() {
-        return Ok(state.engine.stats());
+/// Streams `padflow-input-update` to the webview at 60 Hz and heartbeat at 4 Hz.
+pub fn run_engine_with_telemetry(
+    engine: &crate::input::gamepad::PadFlowEngine,
+    app: &AppHandle,
+) -> Result<EngineStats, String> {
+    if !engine.is_running() {
+        let _ = engine.rescan();
+        let sink = app.clone();
+        engine.spawn(move |snapshot: InputSnapshot| {
+            let _ = sink.emit("padflow-input-update", snapshot);
+        })?;
     }
-    let _ = state.engine.rescan();
-    let sink = app.clone();
-    state.engine.spawn(move |snapshot: InputSnapshot| {
-        let _ = sink.emit("padflow-input-update", snapshot);
-    })?;
 
     // Telemetry heartbeat: 4 Hz, cheap, keeps the header widgets honest.
-    let engine = state.engine.clone();
+    let engine_clone = engine.clone();
     let beat = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         loop {
             tick.tick().await;
-            if !engine.is_running() {
-                let _ = beat.emit("padflow-engine-stats", engine.stats());
+            let st = engine_clone.stats();
+            let _ = beat.emit("padflow-engine-stats", st.clone());
+            if !st.running {
                 break;
             }
-            let _ = beat.emit("padflow-engine-stats", engine.stats());
         }
     });
 
-    let _ = app.emit("padflow-engine-started", state.engine.stats());
-    Ok(state.engine.stats())
+    let stats = engine.stats();
+    let _ = app.emit("padflow-engine-started", stats.clone());
+    let _ = app.emit("padflow-engine-stats", stats.clone());
+    Ok(stats)
+}
+
+/// Allocates the ViGEm virtual Xbox 360 target and starts the realtime loop.
+/// Streams `padflow-input-update` to the webview at 60 Hz.
+#[tauri::command]
+pub fn start_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result<EngineStats, String> {
+    run_engine_with_telemetry(&state.engine, &app)
 }
 
 /// Stops the loop and unplugs the virtual pad (neutralised first).
@@ -174,6 +184,7 @@ pub fn stop_padflow_engine(state: State<'_, AppState>, app: AppHandle) -> Result
     let _ = hidhide::uncloak_all_controllers();
     let stats = state.engine.stats();
     let _ = app.emit("padflow-engine-stopped", stats.clone());
+    let _ = app.emit("padflow-engine-stats", stats.clone());
     let _ = app.emit("padflow-hidhide-updated", hidhide::get_status());
     Ok(stats)
 }

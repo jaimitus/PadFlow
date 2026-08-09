@@ -86,7 +86,7 @@ class WebEngine {
   private statsCbs = new Set<(s: EngineStats) => void>();
   private hidhideCbs = new Set<(s: HidHideStatus) => void>();
   private raf = 0;
-  private running = false;
+  private running = true;
   private polls = 0;
   private t0 = performance.now();
   private lastStats = 0;
@@ -96,6 +96,10 @@ class WebEngine {
   private peak = 0;
   private hidhideActive = true;
   private hiddenDevices: string[] = ["HID\\VID_054C&PID_0CE6&COL01\\7&3084128&0&0000"];
+
+  constructor() {
+    this.start();
+  }
 
   devices(): GamepadInfo[] {
     const out: GamepadInfo[] = [];
@@ -436,10 +440,24 @@ export const padflow = {
 
   async onStats(cb: (s: EngineStats) => void): Promise<Unlisten> {
     if (isNative()) {
+      const unlisteners: (() => void)[] = [];
       try {
-        return await tauriListen<EngineStats>("padflow-engine-stats", (e) => {
-          cb(e.payload);
-        });
+        unlisteners.push(
+          await tauriListen<EngineStats>("padflow-engine-stats", (e) => {
+            cb(e.payload);
+          }),
+        );
+        unlisteners.push(
+          await tauriListen<EngineStats>("padflow-engine-started", (e) => {
+            cb(e.payload);
+          }),
+        );
+        unlisteners.push(
+          await tauriListen<EngineStats>("padflow-engine-stopped", (e) => {
+            cb(e.payload);
+          }),
+        );
+        return () => unlisteners.forEach((u) => u());
       } catch (err) {
         console.error("Failed to subscribe to padflow-engine-stats:", err);
       }
@@ -547,7 +565,7 @@ export const padflow = {
       stats: web.stats(),
       profile: DEFAULT_PROFILE,
       deviceProfiles: {},
-      devices: [],
+      devices: web.devices(),
       vigemInstalled: true,
       hidhideStatus: web.hidhideStatus(),
       version: "1.1.0",

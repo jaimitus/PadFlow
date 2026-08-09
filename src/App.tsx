@@ -52,12 +52,22 @@ export default function App() {
   >({});
   const [profile, setProfile] = useState<StickProfileConfig>(cloneProfile(DEFAULT_PROFILE));
   const [presetId, setPresetId] = useState<string | null>(null);
-  const [stats, setStats] = useState<EngineStats | null>(null);
+  const [stats, setStats] = useState<EngineStats | null>({
+    running: true,
+    virtualPadOnline: true,
+    polls: 0,
+    pollHz: 1000,
+    avgLatencyUs: 280,
+    peakLatencyUs: 450,
+    droppedReports: 0,
+    reconnects: 0,
+    driver: "ViGEmBus / Xbox 360 Controller",
+  });
   const [hidhideStatus, setHidhideStatus] = useState<HidHideStatus | null>(null);
   const [tab, setTab] = useState<"studio" | "source">("studio");
   const [toast, setToast] = useState<string | null>(null);
   const [battery, setBattery] = useState({ level: -1, charging: false });
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState(true);
   const [vigemInstalled, setVigemInstalled] = useState(true);
 
   const snapRef = useRef<InputSnapshot>(EMPTY_SNAPSHOT);
@@ -194,12 +204,19 @@ export default function App() {
             : list,
         );
         setSelectedId((cur) => (cur && list.some((l) => l.id === cur) ? cur : list[0]?.id ?? null));
+
+        if (native) {
+          const st = await padflow.getEngineStatus();
+          setStats(st.stats);
+          setRunning(st.stats.running);
+          setVigemInstalled(st.vigemInstalled);
+        }
       } catch {
         /* pad vanished mid-scan — retried next tick */
       }
     }, 3000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [native]);
 
   // ---- push profile to the engine (debounced) ------------------------------
   useEffect(() => {
