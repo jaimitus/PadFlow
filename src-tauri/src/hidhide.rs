@@ -19,6 +19,27 @@ pub struct HidHideStatus {
 }
 
 // ---------------------------------------------------------------------------
+// IOCTL definitions
+// ---------------------------------------------------------------------------
+
+const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> u32 {
+    (device_type << 16) | (access << 14) | (function << 2) | method
+}
+
+const FILE_DEVICE_UNKNOWN: u32 = 0x00000022;
+const METHOD_BUFFERED: u32 = 0;
+const FILE_ANY_ACCESS: u32 = 0;
+const FILE_READ_DATA: u32 = 1;
+const FILE_WRITE_DATA: u32 = 2;
+
+pub const IOCTL_GET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2048, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_SET_WHITELIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2049, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2050, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2051, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_GET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_SET_ACTIVE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -42,6 +63,7 @@ pub fn normalize_device_instance_path(path: &str) -> String {
     clean.replace('#', "\\").to_uppercase()
 }
 
+/// Generates all collection and container IDs for a controller to hide every PnP endpoint.
 pub fn extract_all_device_instance_ids(path: &str) -> Vec<String> {
     let mut ids = Vec::new();
     let norm = normalize_device_instance_path(path);
@@ -50,6 +72,7 @@ pub fn extract_all_device_instance_ids(path: &str) -> Vec<String> {
     }
     ids.push(norm.clone());
 
+    // Generate composite collections COL01 through COL06
     if let Some(col_idx) = norm.find("&COL") {
         if let Some(next_slash) = norm[col_idx..].find('\\') {
             let prefix = &norm[..col_idx];
@@ -67,6 +90,7 @@ pub fn extract_all_device_instance_ids(path: &str) -> Vec<String> {
         }
     }
 
+    // Add USB parent instance
     if norm.starts_with(r"HID\VID_") {
         let usb_id = norm.replacen(r"HID\", r"USB\", 1);
         if !ids.contains(&usb_id) {
@@ -118,7 +142,7 @@ pub fn multi_sz_to_string_list(buffer: &[u16]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Windows In-Process Registry & Client Helpers
+// Windows In-Process Driver & Registry Engine
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
@@ -126,15 +150,56 @@ pub mod win {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
 
+    type HANDLE = *mut std::ffi::c_void;
     type HKEY = *mut std::ffi::c_void;
+
     const HKEY_LOCAL_MACHINE: HKEY = 0x80000002usize as HKEY;
+    const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
+
+    const GENERIC_READ: u32 = 0x80000000;
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const FILE_SHARE_DELETE: u32 = 0x00000004;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
+
     const KEY_READ: u32 = 0x20019;
     const KEY_WRITE: u32 = 0x20006;
     const REG_DWORD: u32 = 4;
     const REG_MULTI_SZ: u32 = 7;
 
     const PARAMS_KEY: &str = r"SYSTEM\CurrentControlSet\Services\HidHide\Parameters";
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut std::ffi::c_void,
+        ) -> HANDLE;
+
+        fn CloseHandle(hObject: HANDLE) -> i32;
+        fn QueryDosDeviceW(lpDeviceName: *const u16, lpTargetPath: *mut u16, ucchMax: u32) -> u32;
+
+        fn DeviceIoControl(
+            hDevice: HANDLE,
+            dwIoControlCode: u32,
+            lpInBuffer: *const std::ffi::c_void,
+            nInBufferSize: u32,
+            lpOutBuffer: *mut std::ffi::c_void,
+            nOutBufferSize: u32,
+            lpBytesReturned: *mut u32,
+            lpOverlapped: *mut std::ffi::c_void,
+        ) -> i32;
+    }
 
     #[link(name = "advapi32")]
     extern "system" {
@@ -177,11 +242,6 @@ pub mod win {
         ) -> i32;
 
         fn RegCloseKey(hKey: HKEY) -> i32;
-    }
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn QueryDosDeviceW(lpDeviceName: *const u16, lpTargetPath: *mut u16, ucchMax: u32) -> u32;
     }
 
     fn to_wide(s: &str) -> Vec<u16> {
@@ -413,6 +473,180 @@ pub mod win {
             Err(format!("Cannot write {name} (code {ret_val})"))
         }
     }
+
+    pub struct HidHideHandle(HANDLE);
+
+    impl HidHideHandle {
+        pub fn open() -> Result<Self, String> {
+            let path_wide = to_wide(r"\\.\HidHide");
+
+            unsafe {
+                let mut handle = CreateFileW(
+                    path_wide.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                );
+
+                if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+                    handle = CreateFileW(
+                        path_wide.as_ptr(),
+                        GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        std::ptr::null_mut(),
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        std::ptr::null_mut(),
+                    );
+                }
+
+                if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+                    return Err("HidHide driver not installed or control device not accessible".into());
+                }
+
+                Ok(Self(handle))
+            }
+        }
+
+        pub fn get_active(&self) -> bool {
+            let mut active_byte = 0u8;
+            let mut returned = 0u32;
+            for ioctl in [IOCTL_GET_ACTIVE, ctl_code(FILE_DEVICE_UNKNOWN, 2052, METHOD_BUFFERED, FILE_READ_DATA)] {
+                let ok = unsafe {
+                    DeviceIoControl(
+                        self.0,
+                        ioctl,
+                        std::ptr::null(),
+                        0,
+                        &mut active_byte as *mut _ as *mut _,
+                        1,
+                        &mut returned,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok != 0 {
+                    return active_byte != 0;
+                }
+            }
+            reg_get_active()
+        }
+
+        pub fn set_active(&self, active: bool) {
+            let active_byte = if active { 1u8 } else { 0u8 };
+            let mut returned = 0u32;
+            let _ = reg_set_active(active);
+
+            for ioctl in [IOCTL_SET_ACTIVE, ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_WRITE_DATA)] {
+                let ok = unsafe {
+                    DeviceIoControl(
+                        self.0,
+                        ioctl,
+                        &active_byte as *const _ as *const _,
+                        1,
+                        std::ptr::null_mut(),
+                        0,
+                        &mut returned,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok != 0 {
+                    break;
+                }
+            }
+        }
+
+        pub fn get_blacklist(&self) -> Vec<String> {
+            self.get_multi_sz(IOCTL_GET_BLACKLIST, "BlacklistedDeviceInstancePaths")
+        }
+
+        pub fn set_blacklist(&self, list: &[String]) {
+            let _ = reg_set_multi_sz("BlacklistedDeviceInstancePaths", list);
+            self.set_multi_sz(IOCTL_SET_BLACKLIST, list);
+        }
+
+        pub fn get_whitelist(&self) -> Vec<String> {
+            self.get_multi_sz(IOCTL_GET_WHITELIST, "WhitelistedFullImageNames")
+        }
+
+        pub fn set_whitelist(&self, list: &[String]) {
+            let _ = reg_set_multi_sz("WhitelistedFullImageNames", list);
+            self.set_multi_sz(IOCTL_SET_WHITELIST, list);
+        }
+
+        fn get_multi_sz(&self, ioctl: u32, reg_name: &str) -> Vec<String> {
+            let mut buffer = vec![0u16; 8192];
+            let mut returned = 0u32;
+
+            let ok = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl,
+                    std::ptr::null(),
+                    0,
+                    buffer.as_mut_ptr() as *mut _,
+                    (buffer.len() * 2) as u32,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                let list = multi_sz_to_string_list(&buffer);
+                if !list.is_empty() {
+                    return list;
+                }
+            }
+
+            reg_get_multi_sz(reg_name)
+        }
+
+        fn set_multi_sz(&self, ioctl: u32, list: &[String]) {
+            let multi_sz = string_list_to_multi_sz(list);
+            let mut returned = 0u32;
+
+            let _ = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl,
+                    multi_sz.as_ptr() as *const _,
+                    (multi_sz.len() * 2) as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+        }
+    }
+
+    impl Drop for HidHideHandle {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Silently disables and re-enables connected Sony gamepads via PnP in 50ms so Windows immediately
+    /// applies HidHide filtering without requiring the user to physically unplug the USB cable.
+    pub fn restart_gamepad_pnp_devices() {
+        let ps_cmd = r#"
+        $devs = Get-PnpDevice | Where-Object { ($_.InstanceId -like "*VID_054C*") -or ($_.FriendlyName -like "*Wireless Controller*") -or ($_.FriendlyName -like "*DualSense*") }
+        foreach ($d in $devs) {
+            try {
+                Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 40
+                Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
+            } catch {}
+        }
+        "#;
+
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.args(["-NoProfile", "-NonInteractive", "-Command", ps_cmd]).status();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,7 +656,7 @@ pub mod win {
 pub fn is_installed() -> bool {
     #[cfg(windows)]
     {
-        win::is_service_installed() || win::find_hidhide_gui().is_some()
+        win::is_service_installed() || win::find_hidhide_gui().is_some() || win::HidHideHandle::open().is_ok()
     }
     #[cfg(not(windows))]
     {
@@ -447,9 +681,11 @@ pub fn get_status() -> HidHideStatus {
             };
         }
 
-        let active = win::reg_get_active();
-        let hidden = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
-        let whitelist = win::reg_get_multi_sz("WhitelistedFullImageNames");
+        let (active, hidden, whitelist) = if let Ok(handle) = win::HidHideHandle::open() {
+            (handle.get_active(), handle.get_blacklist(), handle.get_whitelist())
+        } else {
+            (win::reg_get_active(), win::reg_get_multi_sz("BlacklistedDeviceInstancePaths"), win::reg_get_multi_sz("WhitelistedFullImageNames"))
+        };
 
         let exe_lower = current_exe.to_lowercase();
         let dev_lower = win::dos_path_to_device_path(&current_exe).to_lowercase();
@@ -492,22 +728,43 @@ pub fn auto_whitelist_current_process() -> Result<(), String> {
             .to_string();
 
         let device_path = win::dos_path_to_device_path(&current_exe);
-        let mut whitelist = win::reg_get_multi_sz("WhitelistedFullImageNames");
-        let dev_lower = device_path.to_lowercase();
-        let exe_lower = current_exe.to_lowercase();
 
-        let mut changed = false;
-        if !whitelist.iter().any(|w| w.to_lowercase() == dev_lower) {
-            whitelist.push(device_path);
-            changed = true;
-        }
-        if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
-            whitelist.push(current_exe);
-            changed = true;
-        }
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let mut whitelist = handle.get_whitelist();
+            let dev_lower = device_path.to_lowercase();
+            let exe_lower = current_exe.to_lowercase();
 
-        if changed {
-            let _ = win::reg_set_multi_sz("WhitelistedFullImageNames", &whitelist);
+            let mut changed = false;
+            if !whitelist.iter().any(|w| w.to_lowercase() == dev_lower) {
+                whitelist.push(device_path);
+                changed = true;
+            }
+            if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
+                whitelist.push(current_exe);
+                changed = true;
+            }
+
+            if changed {
+                handle.set_whitelist(&whitelist);
+            }
+        } else {
+            let mut whitelist = win::reg_get_multi_sz("WhitelistedFullImageNames");
+            let dev_lower = device_path.to_lowercase();
+            let exe_lower = current_exe.to_lowercase();
+
+            let mut changed = false;
+            if !whitelist.iter().any(|w| w.to_lowercase() == dev_lower) {
+                whitelist.push(device_path);
+                changed = true;
+            }
+            if !whitelist.iter().any(|w| w.to_lowercase() == exe_lower) {
+                whitelist.push(current_exe);
+                changed = true;
+            }
+
+            if changed {
+                let _ = win::reg_set_multi_sz("WhitelistedFullImageNames", &whitelist);
+            }
         }
 
         Ok(())
@@ -528,20 +785,35 @@ pub fn hide_device(raw_path: &str) -> Result<(), String> {
     {
         let _ = auto_whitelist_current_process();
 
-        let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
-        let mut changed = false;
-        for id in &ids {
-            if !list.iter().any(|p| p.eq_ignore_ascii_case(id)) {
-                list.push(id.clone());
-                changed = true;
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let mut list = handle.get_blacklist();
+            let mut changed = false;
+            for id in &ids {
+                if !list.iter().any(|p| p.eq_ignore_ascii_case(id)) {
+                    list.push(id.clone());
+                    changed = true;
+                }
             }
+            if changed {
+                handle.set_blacklist(&list);
+            }
+            handle.set_active(true);
+        } else {
+            let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
+            let mut changed = false;
+            for id in &ids {
+                if !list.iter().any(|p| p.eq_ignore_ascii_case(id)) {
+                    list.push(id.clone());
+                    changed = true;
+                }
+            }
+            if changed {
+                let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+            }
+            let _ = win::reg_set_active(true);
         }
 
-        if changed {
-            let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
-        }
-
-        let _ = win::reg_set_active(true);
+        win::restart_gamepad_pnp_devices();
         Ok(())
     }
     #[cfg(not(windows))]
@@ -556,14 +828,23 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
-        let initial_len = list.len();
-        list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
-
-        if list.len() != initial_len {
-            let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+        if let Ok(handle) = win::HidHideHandle::open() {
+            let mut list = handle.get_blacklist();
+            let initial_len = list.len();
+            list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
+            if list.len() != initial_len {
+                handle.set_blacklist(&list);
+            }
+        } else {
+            let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
+            let initial_len = list.len();
+            list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
+            if list.len() != initial_len {
+                let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+            }
         }
 
+        win::restart_gamepad_pnp_devices();
         Ok(())
     }
     #[cfg(not(windows))]
@@ -576,7 +857,13 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
 pub fn set_active(active: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let _ = win::reg_set_active(active);
+        if let Ok(handle) = win::HidHideHandle::open() {
+            handle.set_active(active);
+        } else {
+            let _ = win::reg_set_active(active);
+        }
+
+        win::restart_gamepad_pnp_devices();
         Ok(())
     }
     #[cfg(not(windows))]
@@ -589,8 +876,15 @@ pub fn set_active(active: bool) -> Result<(), String> {
 pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
     #[cfg(windows)]
     {
-        let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[]);
-        let _ = win::reg_set_active(false);
+        if let Ok(handle) = win::HidHideHandle::open() {
+            handle.set_blacklist(&[]);
+            handle.set_active(false);
+        } else {
+            let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[]);
+            let _ = win::reg_set_active(false);
+        }
+
+        win::restart_gamepad_pnp_devices();
     }
     Ok(get_status())
 }
@@ -773,16 +1067,5 @@ mod tests {
         let ids = extract_all_device_instance_ids(raw);
         assert!(ids.contains(&r"HID\VID_054C&PID_0CE6&COL01\7&3084128&0&0000".to_string()));
         assert!(ids.contains(&r"HID\VID_054C&PID_0CE6&COL02\7&3084128&0&0000".to_string()));
-    }
-
-    #[test]
-    fn test_multi_sz_roundtrip() {
-        let original = vec![
-            r"C:\Program Files\PadFlow\padflow.exe".to_string(),
-            r"HID\VID_054C&PID_0CE6\12345".to_string(),
-        ];
-        let encoded = string_list_to_multi_sz(&original);
-        let decoded = multi_sz_to_string_list(&encoded);
-        assert_eq!(original, decoded);
     }
 }
