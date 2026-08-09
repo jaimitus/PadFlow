@@ -9,7 +9,12 @@ import StickCurveCanvas from "./components/StickCurveCanvas";
 import TriggerTuner from "./components/TriggerTuner";
 import { DEFAULT_PROFILE, cloneProfile } from "./lib/curves";
 import { padflow } from "./lib/engine";
-import { installUpdate, relaunchApp, checkForUpdates } from "./lib/updater";
+import {
+  installUpdate,
+  relaunchApp,
+  checkForUpdates,
+  type UpdateCheckState,
+} from "./lib/updater";
 import { APP_VERSION, type UpdateInfo } from "./lib/version";
 import type {
   EngineStats,
@@ -73,9 +78,7 @@ export default function App() {
   const [vigemInstalled, setVigemInstalled] = useState(true);
 
   // ---- update checker state -------------------------------------------------
-  const [updateState, setUpdateState] = useState<
-    "idle" | "checking" | "available" | "up-to-date" | "error"
-  >("idle");
+  const [updateState, setUpdateState] = useState<UpdateCheckState>("idle");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -97,36 +100,49 @@ export default function App() {
   }, []);
 
   // ---- update checking ------------------------------------------------------
+  const checkingRef = useRef(false);
+  const installingRef = useRef(false);
+  installingRef.current = installing;
+
   const runUpdateCheck = useCallback(
     async (respectDismissed = false) => {
-      if (updateState === "checking" || installing) return;
+      if (checkingRef.current || installingRef.current) return;
+      checkingRef.current = true;
       setUpdateState("checking");
-      const res = await checkForUpdates();
-      if (res.state === "available" && res.info) {
-        setUpdateInfo(res.info);
-        setUpdateState("available");
-        setInstalled(false);
-        if (!respectDismissed || res.info.version !== dismissedVersion) {
-          setUpdateModalOpen(true);
+      try {
+        const res = await checkForUpdates();
+        if (res.state === "available" && res.info) {
+          setUpdateInfo(res.info);
+          setUpdateState("available");
+          setInstalled(false);
+          if (!respectDismissed || res.info.version !== dismissedVersion) {
+            setUpdateModalOpen(true);
+          }
+        } else if (res.state === "up-to-date") {
+          setUpdateState("up-to-date");
+          if (!respectDismissed) notify("You're running the latest version 🎉");
+        } else {
+          setUpdateState("error");
+          if (!respectDismissed) {
+            notify(`Update check failed: ${res.error ?? "unknown error"}`);
+          }
         }
-      } else if (res.state === "up-to-date") {
-        setUpdateState("up-to-date");
-        if (!respectDismissed) notify("You're running the latest version 🎉");
-      } else {
-        setUpdateState("error");
-        if (!respectDismissed) {
-          notify(`Update check failed: ${res.error ?? "unknown error"}`);
-        }
+      } finally {
+        checkingRef.current = false;
       }
     },
-    [dismissedVersion, installing, notify, updateState],
+    [dismissedVersion, notify],
   );
 
   // Silent background check a few seconds after launch — pops the modal if a
-  // new release has been published on GitHub.
+  // new release has been published on GitHub. Runs exactly once per session.
+  const autoCheckRan = useRef(false);
   useEffect(() => {
+    if (autoCheckRan.current) return;
+    autoCheckRan.current = true;
     const t = window.setTimeout(() => runUpdateCheck(true), 4000);
     return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runUpdateCheck]);
 
   const handleInstall = useCallback(async () => {
@@ -1041,12 +1057,14 @@ export default function App() {
                       </button>
                     ) : (
                       <>
-                        <button
-                          onClick={handleInstall}
-                          className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-md shadow-cyan-400/20 transition-all hover:brightness-110"
-                        >
-                          ⬇ Download &amp; install
-                        </button>
+                        {native && (
+                          <button
+                            onClick={handleInstall}
+                            className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-md shadow-cyan-400/20 transition-all hover:brightness-110"
+                          >
+                            ⬇ Download &amp; install
+                          </button>
+                        )}
                         <button
                           onClick={() => padflow.openUrl(updateInfo.url).catch(() => undefined)}
                           className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-semibold text-slate-300 transition-colors hover:border-white/25 hover:text-white"
