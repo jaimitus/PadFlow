@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
-**PadFlow** is a native, ultra-lightweight gamepad calibration studio and virtual Xbox 360 controller emulator for **Windows 10 / 11**. Built from the ground up in **Rust** and **Tauri v2**, PadFlow bridges PlayStation 4 (DualShock 4) and PlayStation 5 (DualSense / Edge) controllers to XInput via **ViGEmBus** with sub-millisecond processing latency, zero bloat, and **HidHide anti-double-input protection**.
+**PadFlow** is a native, ultra-lightweight gamepad calibration studio and virtual Xbox 360 controller emulator for **Windows 10 / 11**. Built from the ground up in **Rust** and **Tauri v2**, PadFlow bridges PlayStation 4 (DualShock 4) and PlayStation 5 (DualSense / Edge) controllers to XInput via **ViGEmBus** with sub-millisecond processing latency, zero bloat, and **integrated HidHide anti-double-input protection**.
 
 ---
 
@@ -14,9 +14,28 @@
 
 ---
 
+## 🚀 What's New in v1.1.0 / Novedades de la Versión 1.1.0
+
+- **🛡️ Enhanced HidHide Cloak Firewall:**
+  - Direct low-level IOCTL communication (`\\.\HidHide`) and synchronized registry integration with the official Nefarius HidHide driver.
+  - 1-Click global cloak toggle with real-time hidden instance count reporting.
+  - Automatic whitelisting of PadFlow executable to prevent self-cloaking.
+  - Direct **"Open Official HidHide Config"** launcher button to easily configure blacklists/whitelists in the official `HidHideClient.exe` GUI.
+- **⚡ Zero-Freeze HID Engine & PnP Safety:**
+  - Removed disruptive background PnP restarts, eliminating device detachments, thread stalls, and latency spikes.
+  - Instantaneous, non-blocking start/stop lifecycle for the virtual Xbox 360 emulation pipeline.
+- **🎮 Persistent Controller State & Real-Time Telemetry:**
+  - Gamepad cards and live input feedback stay visible and responsive even when emulation is stopped.
+  - Real-time 60 FPS stick coordinate tracing on the interactive HTML5 canvas.
+  - Accurate battery levels, connection type indicators (USB / Bluetooth), sub-millisecond latency tracking, and polling rate counters.
+- **🔧 Driver Setup & Diagnostic Helper:**
+  - Automatic detection of ViGEmBus and HidHide driver installations with interactive 1-click download/install helpers for official signed installers.
+
+---
+
 ## ✨ Key Features
 
-- **⚡ Sub-Millisecond Realtime Engine:** Multi-threaded HID engine running up to **1,000 Hz (1 kHz turbo polling)** with sub-millisecond input translation.
+- **⚡ Sub-Millisecond Realtime Engine:** Multi-threaded Rust HID engine running up to **1,000 Hz (1 kHz turbo polling)** with sub-millisecond input translation.
 - **🛡️ HidHide Anti-Double-Input Shield:** Direct integration with the Nefarius **HidHide** driver to cloak physical PlayStation DirectInput devices from games so only the emulated XInput pad is detected, eliminating double-tap and ghost input glitches.
 - **🎮 100% Real PlayStation HID Support:** Direct USB and Bluetooth HID parsing for DualShock 4 (`0x054C:0x05C4`, `0x09CC`) and DualSense / DualSense Edge (`0x054C:0x0CE6`, `0x0DF2`).
 - **📈 Dynamic Stick Response Curve Tuner:** Live 60 FPS interactive HTML5 canvas for visual curve shaping:
@@ -27,7 +46,7 @@
 - **🎯 Inner, Outer & Anti-Deadzone Calibration:** Independent radial or axis-aligned deadzone configuration per stick.
 - **💡 Lightbar & Rumble Haptics:** Custom RGB lightbar color assignment and rumble intensity shaping.
 - **💾 Custom User Profile Manager:** Save, load, export (copy JSON to clipboard), and delete personalized curves locally.
-- **🚀 Automated ViGEmBus & HidHide Integration:** Detects driver presence automatically with interactive 1-click installer support.
+- **🚀 Automated ViGEmBus & HidHide Integration:** Detects driver presence automatically with interactive 1-click installer support and official client launching.
 - **🪶 Ultra-Lightweight Footprint:** Consumes **< 15 MB RAM**, zero background bloat, no account required, 100% telemetry-free.
 
 ---
