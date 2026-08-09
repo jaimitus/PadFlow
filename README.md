@@ -14,7 +14,7 @@
 
 ---
 
-## 🚀 What's New in v1.1.0 / Novedades de la Versión 1.1.0
+## 🚀 What's New in v1.1.0
 
 - **🛡️ Enhanced HidHide Cloak Firewall:**
   - Direct low-level IOCTL communication (`\\.\HidHide`) and synchronized registry integration with the official Nefarius HidHide driver.
