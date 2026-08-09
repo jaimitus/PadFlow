@@ -100,6 +100,16 @@ jobs:
           printf '{\n  "version": "%s",\n  "notes": "PadFlow v%s — published automatically by GitHub Actions",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "https://github.com/%s/releases/download/%s/PadFlow_%s_x64-setup.exe"\n    }\n  }\n}\n' "$VERSION" "$VERSION" "$PUB_DATE" "$SIG" "${GITHUB_REPOSITORY}" "${{ steps.version.outputs.tag }}" "$VERSION" > latest.json
           node -e 'JSON.parse(require("fs").readFileSync("latest.json","utf8")); console.log("OK - latest.json valid")'
 
+      # Rename to a stable public name BEFORE uploading: gh's `file#label`
+      # syntax does NOT survive MSYS argument mangling on Windows runners.
+      - name: Prepare portable exe
+        shell: bash
+        run: |
+          test -f src-tauri/target/release/padflow.exe \
+            || { echo "FAIL - release exe was not built"; exit 1; }
+          cp src-tauri/target/release/padflow.exe PadFlow-Portable.exe
+          echo "OK - portable exe prepared"
+
       - name: Create GitHub release with all assets
         shell: bash
         env:
@@ -113,7 +123,7 @@ jobs:
             "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe.sig" \
             "src-tauri/target/release/bundle/msi/PadFlow_${VERSION}_x64_en-US.msi" \
             "src-tauri/target/release/bundle/msi/PadFlow_${VERSION}_x64_en-US.msi.sig" \
-            "src-tauri/target/release/padflow.exe#PadFlow-Portable.exe" \
+            "PadFlow-Portable.exe" \
             "latest.json" \
             --title "PadFlow v${VERSION} 🚀" $NOTES_ARGS
 
