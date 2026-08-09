@@ -303,15 +303,33 @@ export default function App() {
     const next = !cloakOnStart;
     setCloakOnStart(next);
     setCloakOnStartPreference(next);
-    notify(next ? "Cloak on startup ON — pads already connected get hidden at launch 🛡️" : "Cloak on startup OFF");
-  }, [cloakOnStart, notify]);
+    notify(
+      next
+        ? "Cloak on startup ON — pads already connected get hidden at launch 🛡️"
+        : "Cloak on startup OFF",
+    );
+    // Enabling it mid-session applies immediately (respecting a paused shield).
+    if (next && native && hidhideStatus?.installed && hidhideStatus.active) {
+      padflow
+        .autoCloakControllers()
+        .then((st) => {
+          setHidhideStatus(st);
+          const n = st.hiddenDevices.length;
+          if (n > 0) {
+            notify(`🛡️ Cloaked ${n} device entr${n === 1 ? "y" : "ies"}`);
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [cloakOnStart, hidhideStatus, native, notify]);
 
   // Cloak already-connected PlayStation pads once at launch when enabled.
+  // Respects a paused global shield — an explicit pause always wins.
   const cloakStartDone = useRef(false);
   useEffect(() => {
     if (!native || cloakStartDone.current) return;
-    if (!cloakOnStart || !hidhideStatus?.installed) return;
     cloakStartDone.current = true;
+    if (!cloakOnStart || !hidhideStatus?.installed || !hidhideStatus.active) return;
     padflow
       .autoCloakControllers()
       .then((st) => {
@@ -329,7 +347,7 @@ export default function App() {
   const autoCloakHandled = useRef<Set<string>>(new Set());
   const bootedRef = useRef(false);
   useEffect(() => {
-    if (!autoCloak || !native || !hidhideStatus?.installed) return;
+    if (!autoCloak || !native || !hidhideStatus?.installed || !hidhideStatus.active) return;
     if (!bootedRef.current && devices.length > 0) {
       bootedRef.current = true;
       devices.forEach((p) => autoCloakHandled.current.add(p.id));
@@ -1005,7 +1023,7 @@ export default function App() {
                         <div>
                           <p className="text-[11px] text-slate-300">Cloak on startup</p>
                           <p className="font-mono text-[9.5px] text-slate-600">
-                            hide already-connected pads when PadFlow launches
+                            hide already-connected pads at launch (requires the global shield)
                           </p>
                         </div>
                         <button
