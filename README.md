@@ -1,6 +1,6 @@
 # 🎮 PadFlow — Next-Gen Gamepad Input Calibrator & ViGEmBus Bridge
 
-[![Release](https://img.shields.io/badge/Release-v1.2.3-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.4-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
@@ -14,7 +14,17 @@
 
 ---
 
-## 🚀 What's New in v1.2.3 / Novedades de la Versión 1.2.3
+## 🚀 What's New in v1.2.4 / Novedades de la Versión 1.2.4
+
+- **🤖 CI manifest check:** a GitHub Actions workflow runs on every push/PR touching the Rust side and verifies the release exe embeds `requireAdministrator` (elevated manifest) while the debug exe does **not** — elevation can never silently regress.
+- **🚀 Automated release pipeline:** pushing a `v*.*.*` tag now makes GitHub Actions build, **sign** and publish the full release automatically — NSIS installer, MSI, portable exe, `.sig` signatures and `latest.json` for the built-in updater. No more manual builds or uploads.
+  - Version **triple-guard**: the pipeline refuses to run unless the tag matches `tauri.conf.json`, `package.json` **and** `Cargo.toml` (fail-fast with the mismatched file named).
+  - Manual trigger available too (Actions → Run workflow → tag input) for smoke-testing.
+- **🔐 Everything from v1.2.3 kept:** `requireAdministrator` manifest (UAC at launch), correct HidHide IOCTL contract (device type `0x8001`), honest diagnostics, Shield Control Center, auto-cloak, cloak on startup, tray controls, live 3 s status refresh and one-click signed auto-updates.
+
+---
+
+### 🚀 What's New in v1.2.3 / Novedades de la Versión 1.2.3
 
 - **🔐 Always elevated — `requireAdministrator` manifest:**
   - Release binaries embed a Windows manifest requesting Administrator privileges, so the UAC prompt appears at launch and the entire session runs elevated.
@@ -53,6 +63,11 @@
 ---
 
 ### 📜 Version History
+
+#### v1.2.4 — CI Manifest Check & Automated Release Pipeline
+
+- **🤖 CI manifest check:** GitHub Actions verifies on every push that the release exe embeds `requireAdministrator` and the debug exe does not.
+- **🚀 Automated release pipeline:** tagging `v*.*.*` triggers a workflow that builds, signs and publishes the release — NSIS, MSI, portable, `.sig` files and `latest.json` — with a version triple-guard (`tauri.conf.json` + `package.json` + `Cargo.toml`).
 
 #### v1.2.3 — Always Elevated: requireAdministrator Manifest
 
@@ -150,8 +165,8 @@
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
 
 1. **`PadFlow-Portable.exe`** — Single standalone executable. No installation required.
-2. **`PadFlow_1.2.3_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
-3. **`PadFlow_1.2.3_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
+2. **`PadFlow_1.2.4_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
+3. **`PadFlow_1.2.4_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
 
 > **Note:** PadFlow requires the **ViGEmBus driver** (`v1.22.0+`) for virtual Xbox 360 controller emulation, and supports the **HidHide driver** for anti-double-input device cloaking. If missing, PadFlow provides interactive 1-click in-app installer launchers for both official signed drivers.
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- Keep assemblyIdentity @version in sync with the current PadFlow release (Cargo.toml). -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.2.3.0" processorArchitecture="*" name="PadFlow" type="win32"/>
+  <assemblyIdentity version="1.2.4.0" processorArchitecture="*" name="PadFlow" type="win32"/>
   <description>PadFlow — Gamepad Studio</description>
   <dependency>
     <dependentAssembly>
