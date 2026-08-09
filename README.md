@@ -196,6 +196,43 @@ npm run tauri build
 
 ---
 
+## 🚀 Cutting a Release (Automated Pipeline)
+
+Releases are **fully automated by GitHub Actions** — no local build, signing or
+upload needed. Two workflows guard the pipeline:
+
+1. **`CI - Windows manifest check`** — runs on every push/PR touching `src-tauri/**`
+   and verifies the release exe embeds `requireAdministrator` (elevated manifest)
+   while the debug exe does **not**.
+2. **`Release - publish signed binaries`** — triggered by pushing a version tag.
+   It builds and **signs** the bundles with the repo secrets
+   (`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), publishes
+   the GitHub release with **all assets** (NSIS installer, MSI, portable exe,
+   `.sig` signatures and `latest.json`), and the in-app updater picks it up
+   automatically.
+
+### How to release a new version (3 steps)
+
+```bash
+# 1. Bump the version everywhere (package.json, package-lock.json,
+#    src/lib/version.ts, src-tauri/Cargo.toml, src-tauri/tauri.conf.json)
+#    and update README.md + RELEASE_NOTES.md.
+
+# 2. Commit and push the bump.
+
+git add -A && git commit -m "v1.2.4: <summary of changes>" && git push origin main
+
+# 3. Tag and push — the pipeline does the rest (build, sign, release, latest.json).
+
+git tag v1.2.4 && git push origin v1.2.4
+```
+
+> **Guardrail:** the workflow refuses to run if the tag version does not match
+> `tauri.conf.json` (fail-fast with a clear message). The release exe is also
+> re-verified for the `requireAdministrator` manifest before publishing.
+
+---
+
 ## 📜 License
 
 This project is licensed under the **MIT License** — see the [LICENSE](./LICENSE) file for details.

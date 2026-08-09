@@ -1,0 +1,100 @@
+name: Release - publish signed binaries
+
+# Trigger: pushing a version tag (v1.3.0, v1.2.4, ...). The tag version must
+# match the version in tauri.conf.json / Cargo.toml / package.json — the
+# workflow verifies it before building.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign & publish ${{ github.ref_name }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Derive version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches tauri.conf.json version
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$CONF" != "$VERSION" ]; then
+            echo "FAIL - tag is v${VERSION} but tauri.conf.json says ${CONF}. Bump versions first."
+            exit 1
+          fi
+          echo "OK - tag v${VERSION} matches config"
+
+      # Runs beforeBuildCommand (npm run build) automatically, then builds the
+      # signed NSIS + MSI bundles plus the updater artifacts (.sig files).
+      - name: Build signed bundles (NSIS + MSI + updater artifacts)
+        working-directory: src-tauri
+        run: npx tauri build
+
+      - name: Verify requireAdministrator manifest in release exe
+        shell: bash
+        run: |
+          grep -a -q "requireAdministrator" src-tauri/target/release/padflow.exe \
+            || { echo "FAIL - elevated manifest missing from release exe"; exit 1; }
+          echo "OK - release exe is elevated"
+
+      - name: Generate latest.json update manifest
+        id: manifest
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SIG=$(tr -d '\n' < "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe.sig")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          printf '{\n  "version": "%s",\n  "notes": "PadFlow v%s — published automatically by GitHub Actions",\n  "pub_date": "%s",\n  "platforms": {\n    "windows-x86_64": {\n      "signature": "%s",\n      "url": "https://github.com/%s/releases/download/%s/PadFlow_%s_x64-setup.exe"\n    }\n  }\n}\n' "$VERSION" "$VERSION" "$PUB_DATE" "$SIG" "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "$VERSION" > latest.json
+          node -e 'JSON.parse(require("fs").readFileSync("latest.json","utf8")); console.log("OK - latest.json valid")'
+
+      - name: Create GitHub release with all assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ -f RELEASE_NOTES.md ]; then NOTES_ARGS="--notes-file RELEASE_NOTES.md"; else NOTES_ARGS="--generate-notes"; fi
+          gh release create "$GITHUB_REF_NAME" \
+            "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe" \
+            "src-tauri/target/release/bundle/nsis/PadFlow_${VERSION}_x64-setup.exe.sig" \
+            "src-tauri/target/release/bundle/msi/PadFlow_${VERSION}_x64_en-US.msi" \
+            "src-tauri/target/release/bundle/msi/PadFlow_${VERSION}_x64_en-US.msi.sig" \
+            "src-tauri/target/release/padflow.exe#PadFlow-Portable.exe" \
+            "latest.json" \
+            --title "PadFlow v${VERSION} 🚀" $NOTES_ARGS
+
+      - name: Verify published assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '[.assets[].name]'
