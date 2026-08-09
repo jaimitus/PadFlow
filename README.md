@@ -160,6 +160,16 @@
 
 ---
 
+## 🖥️ Platform Support
+
+PadFlow is **Windows-only (10 / 11, x64)** by design:
+
+- The virtual Xbox 360 controller bridge runs on the **ViGEmBus** kernel driver and the anti-double-input shield on the **HidHide** filter driver — both are **exclusive to Windows** (XInput itself is a Windows API).
+- PadFlow is also bound to `hidapi`'s Windows HID backend and the Windows `requireAdministrator` elevation manifest, so cross-platform builds would lose the app's core features (no virtual controller, no cloaking).
+- The source tree keeps non-Windows fallbacks in the Rust modules (the app remains cleanly compilable on other platforms for development/auditing), but **releases are only built and published for Windows**.
+
+---
+
 ## 📥 Download & Installation
 
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
