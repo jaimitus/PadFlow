@@ -75,8 +75,14 @@ pub fn run() {
             let engine_i = MenuItem::with_id(app, "engine", "Start / Stop engine", true, None::<&str>)?;
             let rescan_i = MenuItem::with_id(app, "rescan", "Rescan controllers", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
+            let cloak_i = MenuItem::with_id(app, "cloak", "🛡️ Cloak all controllers (HidHide)", true, None::<&str>)?;
+            let uncloak_i = MenuItem::with_id(app, "uncloak", "◉ Uncloak all controllers", true, None::<&str>)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit PadFlow", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &engine_i, &rescan_i, &sep, &quit_i])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_i, &engine_i, &rescan_i, &sep, &cloak_i, &uncloak_i, &sep2, &quit_i],
+            )?;
 
             let tray_engine = engine_for_tray.clone();
             TrayIconBuilder::with_id("padflow-tray")
@@ -109,6 +115,13 @@ pub fn run() {
                         if let Ok(list) = state.engine.rescan() {
                             let _ = app.emit("padflow-devices-changed", list);
                         }
+                    }
+                    "cloak" => {
+                        let state = app.state::<AppState>();
+                        let _ = commands::auto_cloak_controllers(state, app.clone());
+                    }
+                    "uncloak" => {
+                        let _ = commands::uncloak_all_controllers(app.clone());
                     }
                     "quit" => {
                         tray_engine.stop();

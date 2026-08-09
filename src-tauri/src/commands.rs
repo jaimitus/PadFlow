@@ -243,7 +243,16 @@ pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Res
     let devices = state.engine.devices();
     let _ = hidhide::auto_whitelist_current_process();
     for dev in devices {
-        let _ = hidhide::hide_device(&dev.path);
+        // Only PlayStation pads should be cloaked — never Xbox / generic HID.
+        let is_ps = matches!(
+            dev.kind,
+            crate::input::gamepad::PadKind::DualShock4
+                | crate::input::gamepad::PadKind::DualSense
+                | crate::input::gamepad::PadKind::DualSenseEdge
+        );
+        if is_ps {
+            let _ = hidhide::hide_device(&dev.path);
+        }
     }
     let _ = hidhide::set_active(true);
     let status = hidhide::get_status();

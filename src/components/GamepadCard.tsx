@@ -8,9 +8,14 @@ interface Props {
   liveBattery: number;
   charging: boolean;
   activeProfileName?: string;
+  /** true when HidHide is installed and this pad is in its blacklist */
+  cloaked: boolean;
+  /** native + HidHide driver installed */
+  shieldAvailable: boolean;
   onSelect: () => void;
   onLed: (rgb: [number, number, number]) => void;
   onRumble: () => void;
+  onToggleCloak: () => void;
 }
 
 const SWATCHES: [number, number, number][] = [
@@ -37,9 +42,12 @@ export default function GamepadCard({
   liveBattery,
   charging,
   activeProfileName,
+  cloaked,
+  shieldAvailable,
   onSelect,
   onLed,
   onRumble,
+  onToggleCloak,
 }: Props) {
   const battery = liveBattery >= 0 ? liveBattery : pad.battery;
   const rgb = pad.led;
@@ -79,6 +87,17 @@ export default function GamepadCard({
               {pad.connection === "usb" ? "USB · WIRED" : "BLUETOOTH"}
             </Tag>
             <Tag>{pad.reportRateHz} Hz</Tag>
+            {shieldAvailable && (
+              <Tag
+                className={
+                  cloaked
+                    ? "border-rose-400/40 bg-rose-400/10 text-rose-300 font-bold"
+                    : "border-emerald-400/25 bg-emerald-400/10 text-emerald-300"
+                }
+              >
+                {cloaked ? "🛡️ CLOAKED" : "VISIBLE"}
+              </Tag>
+            )}
             {activeProfileName && (
               <Tag className="border-cyan-400/30 bg-cyan-400/10 text-cyan-200 font-bold">
                 🎯 {activeProfileName}
@@ -95,6 +114,36 @@ export default function GamepadCard({
           {selected ? "active slot" : "mapped"}
         </span>
       </div>
+
+      {/* HidHide cloak toggle */}
+      {shieldAvailable && (
+        <div
+          className="relative mt-4 flex items-center justify-between rounded-xl border border-white/6 bg-white/[0.02] px-2.5 py-2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="flex items-center gap-1.5 font-mono text-[10px] text-slate-400">
+            <span
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                cloaked ? "bg-rose-400" : "bg-emerald-400",
+              )}
+            />
+            {cloaked ? "HIDDEN FROM GAMES" : "VISIBLE TO GAMES"}
+          </span>
+          <button
+            onClick={onToggleCloak}
+            title={cloaked ? "Stop hiding this controller" : "Hide this controller from games"}
+            className={cn(
+              "rounded-md border px-2.5 py-1 font-mono text-[10px] font-semibold transition-all",
+              cloaked
+                ? "border-rose-400/40 bg-rose-400/10 text-rose-300 hover:bg-rose-400/20"
+                : "border-white/10 bg-white/5 text-slate-300 hover:border-rose-400/40 hover:text-rose-300",
+            )}
+          >
+            {cloaked ? "🛡️ UNCLOAK" : "🙈 CLOAK"}
+          </button>
+        </div>
+      )}
 
       {/* battery */}
       <div className="relative mt-4">

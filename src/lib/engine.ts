@@ -1,4 +1,5 @@
 import { DEFAULT_PROFILE, shapeStick, shapeTrigger, clamp01 } from "./curves";
+import { normalizeDeviceInstancePath } from "./hidhide";
 import { APP_VERSION } from "./version";
 import type {
   ConnectionType,
@@ -96,7 +97,7 @@ class WebEngine {
   private rumbleUntil = 0;
   private peak = 0;
   private hidhideActive = true;
-  private hiddenDevices: string[] = ["HID\\VID_054C&PID_0CE6&COL01\\7&3084128&0&0000"];
+  private hiddenDevices: string[] = [normalizeDeviceInstancePath(SIM_PAD.path)];
 
   constructor() {
     this.start();
@@ -219,13 +220,13 @@ class WebEngine {
   }
 
   toggleDeviceHide(path: string, hide: boolean): HidHideStatus {
-    const norm = path.replace(/[\\?#]/g, "_").toUpperCase();
+    const norm = normalizeDeviceInstancePath(path);
     if (hide) {
       if (!this.hiddenDevices.includes(norm)) {
         this.hiddenDevices.push(norm);
       }
     } else {
-      this.hiddenDevices = this.hiddenDevices.filter((p) => p !== norm && p !== path);
+      this.hiddenDevices = this.hiddenDevices.filter((p) => p !== norm);
     }
     const st = this.hidhideStatus();
     this.hidhideCbs.forEach((cb) => cb(st));
@@ -540,6 +541,11 @@ export const padflow = {
 
   async autoCloakControllers(): Promise<HidHideStatus> {
     if (isNative()) return tauriInvoke<HidHideStatus>("auto_cloak_controllers");
+    for (const d of web.devices()) {
+      if (d.kind !== "xInput" && d.kind !== "generic") {
+        web.toggleDeviceHide(d.path, true);
+      }
+    }
     return web.hidhideStatus();
   },
 
