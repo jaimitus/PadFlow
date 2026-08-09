@@ -64,6 +64,7 @@ pub fn run() {
             commands::toggle_device_hide,
             commands::auto_cloak_controllers,
             commands::uncloak_all_controllers,
+            commands::launch_hidhide_gui,
             commands::install_hidhide_driver,
         ])
         .setup(move |app| {

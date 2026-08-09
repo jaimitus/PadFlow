@@ -677,7 +677,7 @@ export default function App() {
                       <span className="font-mono text-[10px] text-slate-400">
                         Hidden instances: <span className="text-emerald-300 font-bold">{hidhideStatus.hiddenDevices.length}</span>
                       </span>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <button
                           onClick={autoCloakAll}
                           className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 font-mono text-[9.5px] text-emerald-300 hover:bg-emerald-400/20 transition-colors"
@@ -689,6 +689,20 @@ export default function App() {
                           className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[9.5px] text-slate-300 hover:bg-white/10 transition-colors"
                         >
                           🔓 UNCLOAK ALL
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const msg = await padflow.launchHidHideGui();
+                              notify(msg);
+                            } catch (e) {
+                              notify(String(e));
+                            }
+                          }}
+                          className="rounded-md border border-white/10 bg-white/5 px-2 py-1 font-mono text-[9.5px] text-slate-400 hover:text-slate-200 transition-colors"
+                          title="Open official Nefarius HidHide Configuration Client GUI"
+                        >
+                          ⚙️ HIDHIDE GUI
                         </button>
                       </div>
                     </div>

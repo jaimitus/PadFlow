@@ -248,6 +248,12 @@ pub fn uncloak_all_controllers(app: AppHandle) -> Result<HidHideStatus, String> 
     Ok(status)
 }
 
+/// Opens the official Nefarius HidHide Configuration Client GUI.
+#[tauri::command]
+pub fn launch_hidhide_gui() -> Result<String, String> {
+    hidhide::launch_hidhide_gui()
+}
+
 /// Launches the HidHide driver installer with UAC Administrator privileges.
 #[tauri::command]
 pub fn install_hidhide_driver(app: AppHandle) -> Result<String, String> {

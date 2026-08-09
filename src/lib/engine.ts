@@ -529,6 +529,11 @@ export const padflow = {
     return web.setHidHideActive(false);
   },
 
+  async launchHidHideGui(): Promise<string> {
+    if (isNative()) return tauriInvoke<string>("launch_hidhide_gui");
+    throw new Error("HidHide Client is only available in desktop native mode");
+  },
+
   async installHidHideDriver(): Promise<string> {
     if (isNative()) {
       return tauriInvoke<string>("install_hidhide_driver");
