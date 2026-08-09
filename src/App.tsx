@@ -247,10 +247,10 @@ export default function App() {
       notify(
         n > 0
           ? `Cloaked ${n} device entr${n === 1 ? "y" : "ies"} — only the virtual pad reaches games 🛡️`
-          : "No PlayStation controllers to cloak",
+          : "Nothing was cloaked — no PlayStation controller is detected",
       );
     } catch (e) {
-      notify(`Cloak failed: ${String(e)}`);
+      notify(String(e));
     } finally {
       setShieldBusy(false);
     }
@@ -269,6 +269,15 @@ export default function App() {
       setShieldBusy(false);
     }
   }, [notify, shieldBusy]);
+
+  const relaunchAsAdmin = useCallback(async () => {
+    notify("Requesting Administrator rights — accept the UAC prompt…");
+    try {
+      await padflow.relaunchAsAdmin();
+    } catch (e) {
+      notify(`Relaunch failed: ${String(e)}`);
+    }
+  }, [notify]);
 
   const togglePadCloak = useCallback(
     async (pad: GamepadInfo) => {
@@ -777,6 +786,32 @@ export default function App() {
               className="flex items-center gap-2 rounded-xl bg-amber-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-amber-300 hover:shadow-md hover:shadow-amber-400/20"
             >
               🛠️ INSTALL VIGEMBUS DRIVER
+            </button>
+          </div>
+        )}
+
+        {/* Administrator elevation banner — HidHide rejects writes without it */}
+        {native && hidhideStatus?.installed && hidhideStatus.elevated === false && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-rose-200 shadow-lg backdrop-blur">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose-400/20 text-rose-300 font-bold">
+                🔐
+              </span>
+              <div>
+                <p className="text-xs font-semibold text-rose-100">
+                  PadFlow needs Administrator rights to cloak controllers
+                </p>
+                <p className="font-mono text-[10px] text-rose-300/80">
+                  HidHide rejects blacklist changes from non-elevated processes — that's why CLOAK ALL
+                  reported "nothing to hide" even with your pad connected.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={relaunchAsAdmin}
+              className="flex items-center gap-2 rounded-xl bg-rose-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-rose-300 hover:shadow-md hover:shadow-rose-400/20"
+            >
+              🔄 RESTART AS ADMINISTRATOR
             </button>
           </div>
         )}

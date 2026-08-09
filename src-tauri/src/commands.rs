@@ -236,25 +236,52 @@ pub fn toggle_device_hide(
     Ok(status)
 }
 
-/// Cloaks all currently connected PlayStation / HID controllers automatically.
+/// Cloaks all currently connected PlayStation controllers. Surfaces the REAL
+/// failure cause instead of silently swallowing driver errors (v1.2.1).
 #[tauri::command]
 pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Result<HidHideStatus, String> {
-    let _ = state.engine.rescan();
-    let devices = state.engine.devices();
+    let devices = state
+        .engine
+        .rescan()
+        .map_err(|e| format!("Rescan failed: {e}"))?;
     let _ = hidhide::auto_whitelist_current_process();
-    for dev in devices {
-        // Only PlayStation pads should be cloaked — never Xbox / generic HID.
-        let is_ps = matches!(
-            dev.kind,
-            crate::input::gamepad::PadKind::DualShock4
-                | crate::input::gamepad::PadKind::DualSense
-                | crate::input::gamepad::PadKind::DualSenseEdge
-        );
-        if is_ps {
-            let _ = hidhide::hide_device(&dev.path);
+
+    use crate::input::gamepad::PadKind;
+    let ps_pads: Vec<_> = devices
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                PadKind::DualShock4 | PadKind::DualSense | PadKind::DualSenseEdge
+            )
+        })
+        .collect();
+
+    if ps_pads.is_empty() {
+        let detail = if devices.is_empty() {
+            "no controllers detected by PadFlow — is the pad connected over USB or Bluetooth?".into()
+        } else {
+            let names: Vec<&str> = devices.iter().map(|d| d.name.as_str()).collect();
+            format!(
+                "detected {} controller(s): {} — none is PlayStation. If your DualSense appears in joy.cpl but not here, reconnect it via USB.",
+                devices.len(),
+                names.join(", ")
+            )
+        };
+        return Err(format!("Nothing to cloak — {detail}"));
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    for dev in &ps_pads {
+        if let Err(e) = hidhide::hide_device(&dev.path) {
+            errors.push(format!("{} → {e}", dev.name));
         }
     }
-    let _ = hidhide::set_active(true);
+    if !errors.is_empty() {
+        let hint = "HidHide normally requires Administrator rights — use RESTART AS ADMIN or run PadFlow elevated";
+        return Err(format!("Cloak rejected by HidHide: {} · {hint}", errors.join(" | ")));
+    }
+    hidhide::set_active(true)?;
     let status = hidhide::get_status();
     let _ = app.emit("padflow-hidhide-updated", status.clone());
     Ok(status)
@@ -356,6 +383,16 @@ pub fn relaunch_app(app: AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("failed to relaunch: {e}"))?;
     std::thread::sleep(std::time::Duration::from_millis(250));
+    app.exit(0);
+    Ok(())
+}
+
+/// Relaunches PadFlow with Administrator privileges (UAC prompt).
+/// HidHide rejects blacklist writes from unelevated processes.
+#[tauri::command]
+pub fn relaunch_as_admin(app: AppHandle) -> Result<(), String> {
+    hidhide::relaunch_as_admin()?;
+    std::thread::sleep(std::time::Duration::from_millis(500));
     app.exit(0);
     Ok(())
 }

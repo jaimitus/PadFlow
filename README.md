@@ -1,6 +1,6 @@
 # 🎮 PadFlow — Next-Gen Gamepad Input Calibrator & ViGEmBus Bridge
 
-[![Release](https://img.shields.io/badge/Release-v1.2.0-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.1-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
@@ -14,7 +14,17 @@
 
 ---
 
-## 🚀 What's New in v1.2.0 / Novedades de la Versión 1.2.0
+## 🚀 What's New in v1.2.1 / Novedades de la Versión 1.2.1
+
+- **🔐 Cloak Fix — Real error reporting + Administrator elevation:**
+  - HidHide rejects blacklist writes from non-elevated processes, which made **CLOAK ALL** silently report *"No PlayStation controllers to cloak"* even with a pad connected. v1.2.1 surfaces the **real cause** instead of hiding it.
+  - New **elevation banner** with a **"RESTART AS ADMINISTRATOR"** button — one click relaunches PadFlow with UAC, and cloaking works instantly.
+  - HidHide read/write errors are now propagated end-to-end (registry + IOCTL), so toasts tell you exactly what failed and why.
+  - CLOAK ALL now reports *what* was found: detected controller names, PS pads, and per-device errors.
+
+---
+
+### 🚀 What's New in v1.2.0 / Novedades de la Versión 1.2.0
 
 - **🛡️ Shield Control Center:**
   - Per-controller **CLOAK / UNCLOAK** buttons right on every gamepad card, with a live **CLOAKED / VISIBLE** badge per pad.
@@ -27,6 +37,19 @@
 ---
 
 ### 📜 Version History
+
+#### v1.2.1 — Cloak Fix: Real Errors & Administrator Elevation
+
+- **🔐 HidHide cloaking fixed:** HidHide writes need Administrator rights; previously failures were swallowed and the app reported "No PlayStation controllers to cloak" even with a pad connected.
+- **🔃 "RESTART AS ADMINISTRATOR" button** appears automatically when PadFlow is not elevated.
+- **🗯️ Honest diagnostics:** every HidHide error (registry + IOCTL) now reaches the UI toast with the exact cause; CLOAK ALL lists detected controllers and per-device failures.
+
+#### v1.2.0 — Shield Control Center
+
+- **🛡️ Shield Control Center:**
+  - Per-controller **CLOAK / UNCLOAK** buttons on every gamepad card with live **CLOAKED / VISIBLE** badges.
+  - Global shield switch, **CLOAK ALL** / **UNCLOAK ALL**, hidden-devices list, auto-cloak on connect, cloak on startup.
+  - **Tray controls** for cloaking without opening the window; 3 s live HidHide status refresh.
 
 #### v1.1.1 — Automatic Update Detection via GitHub
 
@@ -102,8 +125,8 @@
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
 
 1. **`PadFlow-Portable.exe`** — Single standalone executable. No installation required.
-2. **`PadFlow_1.2.0_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
-3. **`PadFlow_1.2.0_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
+2. **`PadFlow_1.2.1_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
+3. **`PadFlow_1.2.1_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
 
 > **Note:** PadFlow requires the **ViGEmBus driver** (`v1.22.0+`) for virtual Xbox 360 controller emulation, and supports the **HidHide driver** for anti-double-input device cloaking. If missing, PadFlow provides interactive 1-click in-app installer launchers for both official signed drivers.
 

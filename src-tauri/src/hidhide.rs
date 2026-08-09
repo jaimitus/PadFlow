@@ -16,6 +16,9 @@ pub struct HidHideStatus {
     pub whitelisted: bool,
     pub hidden_devices: Vec<String>,
     pub app_path: String,
+    /// True when the current process holds Administrator privileges.
+    /// HidHide rejects registry/IOCTL writes from unelevated processes.
+    pub elevated: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +153,6 @@ pub mod win {
     use super::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::process::CommandExt;
 
     type HANDLE = *mut std::ffi::c_void;
     type HKEY = *mut std::ffi::c_void;
@@ -172,7 +174,6 @@ pub mod win {
     const REG_MULTI_SZ: u32 = 7;
 
     const PARAMS_KEY: &str = r"SYSTEM\CurrentControlSet\Services\HidHide\Parameters";
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     #[link(name = "kernel32")]
     extern "system" {
@@ -287,6 +288,43 @@ pub mod win {
             unsafe { RegCloseKey(key) };
             true
         } else {
+            false
+        }
+    }
+
+    /// True when the current process token is elevated (Administrator).
+    /// HidHide's registry + control-device writes are rejected otherwise.
+    pub fn is_elevated() -> bool {
+        #[cfg(windows)]
+        {
+            use windows::Win32::Security::{
+                GetTokenInformation, TOKEN_ELEVATION, TokenElevation, TOKEN_QUERY,
+            };
+            use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+            unsafe {
+                let process = GetCurrentProcess();
+                let mut token = windows::Win32::Foundation::HANDLE::default();
+                if OpenProcessToken(process, TOKEN_QUERY, &mut token).is_err()
+                    || token.0.is_null()
+                {
+                    return false;
+                }
+                let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+                let mut returned = 0u32;
+                let ok = GetTokenInformation(
+                    token,
+                    TokenElevation,
+                    Some(&mut elevation as *mut _ as *mut core::ffi::c_void),
+                    std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                    &mut returned,
+                );
+                let _ = windows::Win32::Foundation::CloseHandle(token);
+                ok.is_ok() && elevation.TokenIsElevated != 0
+            }
+        }
+        #[cfg(not(windows))]
+        {
             false
         }
     }
@@ -534,46 +572,66 @@ pub mod win {
             reg_get_active()
         }
 
-        pub fn set_active(&self, active: bool) {
-            let active_byte = if active { 1u8 } else { 0u8 };
-            let mut returned = 0u32;
-            let _ = reg_set_active(active);
+    pub fn set_active(&self, active: bool) -> Result<(), String> {
+        let active_byte = if active { 1u8 } else { 0u8 };
+        let mut returned = 0u32;
+        let reg_res = reg_set_active(active);
 
-            for ioctl in [IOCTL_SET_ACTIVE, ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_WRITE_DATA)] {
-                let ok = unsafe {
-                    DeviceIoControl(
-                        self.0,
-                        ioctl,
-                        &active_byte as *const _ as *const _,
-                        1,
-                        std::ptr::null_mut(),
-                        0,
-                        &mut returned,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if ok != 0 {
-                    break;
-                }
+        let mut io_ok = false;
+        for ioctl in [IOCTL_SET_ACTIVE, ctl_code(FILE_DEVICE_UNKNOWN, 2053, METHOD_BUFFERED, FILE_WRITE_DATA)] {
+            let ok = unsafe {
+                DeviceIoControl(
+                    self.0,
+                    ioctl,
+                    &active_byte as *const _ as *const _,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                io_ok = true;
+                break;
             }
         }
+
+        if io_ok {
+            Ok(())
+        } else {
+            reg_res.map(|_| ())
+        }
+    }
 
         pub fn get_blacklist(&self) -> Vec<String> {
             self.get_multi_sz(IOCTL_GET_BLACKLIST, "BlacklistedDeviceInstancePaths")
         }
 
-        pub fn set_blacklist(&self, list: &[String]) {
-            let _ = reg_set_multi_sz("BlacklistedDeviceInstancePaths", list);
-            self.set_multi_sz(IOCTL_SET_BLACKLIST, list);
+        pub fn set_blacklist(&self, list: &[String]) -> Result<(), String> {
+            let reg_res = reg_set_multi_sz("BlacklistedDeviceInstancePaths", list);
+            match self.set_multi_sz(IOCTL_SET_BLACKLIST, list) {
+                Ok(()) => Ok(()),
+                Err(io_err) => match reg_res {
+                    Ok(()) => Ok(()),
+                    Err(reg_err) => Err(format!("{reg_err} · {io_err}")),
+                },
+            }
         }
 
         pub fn get_whitelist(&self) -> Vec<String> {
             self.get_multi_sz(IOCTL_GET_WHITELIST, "WhitelistedFullImageNames")
         }
 
-        pub fn set_whitelist(&self, list: &[String]) {
-            let _ = reg_set_multi_sz("WhitelistedFullImageNames", list);
-            self.set_multi_sz(IOCTL_SET_WHITELIST, list);
+        pub fn set_whitelist(&self, list: &[String]) -> Result<(), String> {
+            let reg_res = reg_set_multi_sz("WhitelistedFullImageNames", list);
+            match self.set_multi_sz(IOCTL_SET_WHITELIST, list) {
+                Ok(()) => Ok(()),
+                Err(io_err) => match reg_res {
+                    Ok(()) => Ok(()),
+                    Err(reg_err) => Err(format!("{reg_err} · {io_err}")),
+                },
+            }
         }
 
         fn get_multi_sz(&self, ioctl: u32, reg_name: &str) -> Vec<String> {
@@ -602,11 +660,11 @@ pub mod win {
             reg_get_multi_sz(reg_name)
         }
 
-        fn set_multi_sz(&self, ioctl: u32, list: &[String]) {
+        fn set_multi_sz(&self, ioctl: u32, list: &[String]) -> Result<(), String> {
             let multi_sz = string_list_to_multi_sz(list);
             let mut returned = 0u32;
 
-            let _ = unsafe {
+            let ok = unsafe {
                 DeviceIoControl(
                     self.0,
                     ioctl,
@@ -618,6 +676,11 @@ pub mod win {
                     std::ptr::null_mut(),
                 )
             };
+            if ok != 0 {
+                Ok(())
+            } else {
+                Err("HidHide driver rejected the write (code 5 = access denied — run PadFlow as Administrator)".into())
+            }
         }
     }
 
@@ -659,6 +722,7 @@ pub fn get_status() -> HidHideStatus {
                 whitelisted: false,
                 hidden_devices: Vec::new(),
                 app_path: current_exe,
+                elevated: win::is_elevated(),
             };
         }
 
@@ -685,6 +749,7 @@ pub fn get_status() -> HidHideStatus {
             whitelisted,
             hidden_devices: hidden,
             app_path: current_exe,
+            elevated: win::is_elevated(),
         }
     }
 
@@ -696,6 +761,7 @@ pub fn get_status() -> HidHideStatus {
             whitelisted: false,
             hidden_devices: Vec::new(),
             app_path: current_exe,
+            elevated: false,
         }
     }
 }
@@ -726,7 +792,7 @@ pub fn auto_whitelist_current_process() -> Result<(), String> {
             }
 
             if changed {
-                handle.set_whitelist(&whitelist);
+                handle.set_whitelist(&whitelist)?;
             }
         } else {
             let mut whitelist = win::reg_get_multi_sz("WhitelistedFullImageNames");
@@ -744,7 +810,7 @@ pub fn auto_whitelist_current_process() -> Result<(), String> {
             }
 
             if changed {
-                let _ = win::reg_set_multi_sz("WhitelistedFullImageNames", &whitelist);
+                win::reg_set_multi_sz("WhitelistedFullImageNames", &whitelist)?;
             }
         }
 
@@ -776,9 +842,9 @@ pub fn hide_device(raw_path: &str) -> Result<(), String> {
                 }
             }
             if changed {
-                handle.set_blacklist(&list);
+                handle.set_blacklist(&list)?;
             }
-            handle.set_active(true);
+            handle.set_active(true)?;
         } else {
             let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
             let mut changed = false;
@@ -789,9 +855,9 @@ pub fn hide_device(raw_path: &str) -> Result<(), String> {
                 }
             }
             if changed {
-                let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+                win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list)?;
             }
-            let _ = win::reg_set_active(true);
+            win::reg_set_active(true)?;
         }
 
         Ok(())
@@ -813,14 +879,14 @@ pub fn unhide_device(raw_path: &str) -> Result<(), String> {
             let initial_len = list.len();
             list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
             if list.len() != initial_len {
-                handle.set_blacklist(&list);
+                handle.set_blacklist(&list)?;
             }
         } else {
             let mut list = win::reg_get_multi_sz("BlacklistedDeviceInstancePaths");
             let initial_len = list.len();
             list.retain(|p| !ids.iter().any(|id| id.eq_ignore_ascii_case(p)) && !p.eq_ignore_ascii_case(raw_path));
             if list.len() != initial_len {
-                let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list);
+                win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &list)?;
             }
         }
 
@@ -837,9 +903,9 @@ pub fn set_active(active: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         if let Ok(handle) = win::HidHideHandle::open() {
-            handle.set_active(active);
+            handle.set_active(active)?;
         } else {
-            let _ = win::reg_set_active(active);
+            win::reg_set_active(active)?;
         }
 
         Ok(())
@@ -855,14 +921,46 @@ pub fn uncloak_all_controllers() -> Result<HidHideStatus, String> {
     #[cfg(windows)]
     {
         if let Ok(handle) = win::HidHideHandle::open() {
-            handle.set_blacklist(&[]);
-            let _ = handle.set_active(false);
+            handle.set_blacklist(&[])?;
+            handle.set_active(false)?;
         } else {
-            let _ = win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[]);
-            let _ = win::reg_set_active(false);
+            win::reg_set_multi_sz("BlacklistedDeviceInstancePaths", &[])?;
+            win::reg_set_active(false)?;
         }
     }
     Ok(get_status())
+}
+
+/// Relaunches PadFlow with Administrator privileges (UAC prompt).
+/// Returns Ok once the elevated copy was spawned; the caller should exit.
+pub fn relaunch_as_admin() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("failed to resolve PadFlow path: {e}"))?;
+        let cmd = format!(
+            "Start-Process -FilePath '{}' -Verb RunAs",
+            exe.to_string_lossy().replace('\'', "''")
+        );
+        let mut proc = std::process::Command::new("powershell");
+        proc.creation_flags(CREATE_NO_WINDOW);
+        let status = proc
+            .args(["-Command", &cmd])
+            .status()
+            .map_err(|e| format!("failed to launch elevated PadFlow: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Elevated relaunch was cancelled or denied (UAC)".into())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Administrator relaunch is only supported on Windows".into())
+    }
 }
 
 pub fn launch_hidhide_gui() -> Result<String, String> {

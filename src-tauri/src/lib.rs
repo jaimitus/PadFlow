@@ -10,8 +10,6 @@ pub mod commands;
 pub mod hidhide;
 pub mod input;
 
-use std::sync::Arc;
-
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -68,6 +66,7 @@ pub fn run() {
             commands::launch_hidhide_gui,
             commands::install_hidhide_driver,
             commands::relaunch_app,
+            commands::relaunch_as_admin,
         ])
         .setup(move |app| {
             // ---- tray -----------------------------------------------------

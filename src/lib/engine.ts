@@ -209,6 +209,7 @@ class WebEngine {
       whitelisted: true,
       hiddenDevices: this.hiddenDevices,
       appPath: "C:\\Program Files\\PadFlow\\PadFlow.exe",
+      elevated: true,
     };
   }
 
@@ -564,6 +565,14 @@ export const padflow = {
       return tauriInvoke<string>("install_hidhide_driver");
     }
     throw new Error("HidHide installation is only available in desktop native mode");
+  },
+
+  async relaunchAsAdmin(): Promise<void> {
+    if (isNative()) {
+      await tauriInvoke("relaunch_as_admin");
+      return;
+    }
+    throw new Error("Administrator relaunch is only available in desktop native mode");
   },
 
   async getEngineStatus(): Promise<EngineStatus> {

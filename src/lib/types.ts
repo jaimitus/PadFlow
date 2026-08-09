@@ -86,6 +86,8 @@ export interface HidHideStatus {
   whitelisted: boolean;
   hiddenDevices: string[];
   appPath: string;
+  /** True when PadFlow holds Administrator privileges (required by HidHide writes). */
+  elevated: boolean;
 }
 
 export interface EngineStats {
