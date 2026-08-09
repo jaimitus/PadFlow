@@ -1,0 +1,66 @@
+name: CI - Windows manifest check
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifest-check:
+    name: Verify requireAdministrator manifest embedding
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # tauri::generate_context!() embeds ../dist at compile time, so the
+      # frontend must be built before any Rust compile.
+      - name: Build frontend
+        run: npm run build
+
+      # The requireAdministrator manifest is embedded by build.rs during the
+      # cargo build itself (no bundling / signing required).
+      - name: Build release exe
+        working-directory: src-tauri
+        run: cargo build --release
+
+      - name: Build debug exe
+        working-directory: src-tauri
+        run: cargo build
+
+      - name: Release exe MUST embed requireAdministrator
+        shell: bash
+        run: |
+          if grep -a -q "requireAdministrator" src-tauri/target/release/padflow.exe; then
+            echo "OK - release exe embeds requireAdministrator"
+          else
+            echo "FAIL - requireAdministrator NOT found in release exe (manifest missing?)"
+            exit 1
+          fi
+
+      - name: Debug exe must NOT embed requireAdministrator
+        shell: bash
+        run: |
+          if grep -a -q "requireAdministrator" src-tauri/target/debug/padflow.exe; then
+            echo "FAIL - debug exe should NOT be elevated but contains requireAdministrator"
+            exit 1
+          else
+            echo "OK - debug exe stays unelevated"
+          fi
