@@ -575,9 +575,7 @@ pub mod win {
 
     pub fn set_active(&self, active: bool) -> Result<(), String> {
         let active_byte = if active { 1u8 } else { 0u8 };
-        let mut returned = 0u32;
-        let reg_res = reg_set_active(active);
-
+        let mut returned = 0u32;        let reg_res = reg_set_active(active);
         let io_ok = unsafe {
             DeviceIoControl(
                 self.0,
@@ -594,7 +592,15 @@ pub mod win {
         if io_ok {
             Ok(())
         } else {
-            reg_res
+            let io_err = std::io::Error::last_os_error();
+            match reg_res {
+                Ok(()) => Err(format!(
+                    "HidHide driver rejected the active-state write ({io_err})"
+                )),
+                Err(reg_err) => Err(format!(
+                    "{reg_err} · HidHide driver rejected the active-state write ({io_err})"
+                )),
+            }
         }
     }
 
@@ -675,9 +681,7 @@ pub mod win {
             } else {
                 let err = std::io::Error::last_os_error();
                 let code = err.raw_os_error().unwrap_or(0);
-                Err(format!(
-                    "HidHide driver rejected the write (code {code} — {err}); run PadFlow as Administrator"
-                ))
+                Err(format!("HidHide driver rejected the write (code {code} — {err})"))
             }
         }
     }
@@ -1158,5 +1162,18 @@ mod tests {
         let ids = extract_all_device_instance_ids(raw);
         assert!(ids.contains(&r"HID\VID_054C&PID_0CE6&COL01\7&3084128&0&0000".to_string()));
         assert!(ids.contains(&r"HID\VID_054C&PID_0CE6&COL02\7&3084128&0&0000".to_string()));
+    }
+
+    /// Regression guard: these values MUST match the official
+    /// `Shared/HidHideIoctlContract.h` (CTL_CODE(32769, fn, BUFFERED, READ)).
+    /// A wrong device type here shipped twice and broke cloaking (error 87).
+    #[test]
+    fn test_ioctl_codes_match_official_contract() {
+        assert_eq!(IOCTL_GET_WHITELIST, 0x8001_6000);
+        assert_eq!(IOCTL_SET_WHITELIST, 0x8001_6004);
+        assert_eq!(IOCTL_GET_BLACKLIST, 0x8001_6008);
+        assert_eq!(IOCTL_SET_BLACKLIST, 0x8001_600C);
+        assert_eq!(IOCTL_GET_ACTIVE, 0x8001_6010);
+        assert_eq!(IOCTL_SET_ACTIVE, 0x8001_6014);
     }
 }

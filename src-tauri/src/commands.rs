@@ -278,7 +278,7 @@ pub fn auto_cloak_controllers(state: State<'_, AppState>, app: AppHandle) -> Res
         }
     }
     if !errors.is_empty() {
-        let hint = "HidHide normally requires Administrator rights — use RESTART AS ADMIN or run PadFlow elevated";
+        let hint = "if it persists, try RESTART AS ADMIN (registry fallback)";
         return Err(format!("Cloak rejected by HidHide: {} · {hint}", errors.join(" | ")));
     }
     hidhide::set_active(true)?;
