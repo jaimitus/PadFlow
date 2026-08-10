@@ -7,6 +7,7 @@
 //! * auto-start the input engine as soon as the webview is ready.
 
 pub mod commands;
+pub mod game_detector;
 pub mod hidhide;
 pub mod input;
 
@@ -17,10 +18,12 @@ use tauri::{
 };
 
 use crate::input::gamepad::PadFlowEngine;
+use crate::game_detector::GameDetector;
 
 /// Everything the IPC layer needs. Cheap to clone (engine is `Arc` inside).
 pub struct AppState {
     pub engine: PadFlowEngine,
+    pub game_detector: GameDetector,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,6 +32,7 @@ pub fn run() {
 
     let engine = PadFlowEngine::new();
     let engine_for_tray = engine.clone();
+    let game_detector = GameDetector::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -43,6 +47,7 @@ pub fn run() {
         }))
         .manage(AppState {
             engine: engine.clone(),
+            game_detector: game_detector.clone(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_connected_gamepads,
@@ -67,6 +72,14 @@ pub fn run() {
             commands::install_hidhide_driver,
             commands::relaunch_app,
             commands::relaunch_as_admin,
+            // Game detection commands
+            commands::scan_for_games,
+            commands::get_game_profiles,
+            commands::add_game_profile,
+            commands::remove_game_profile,
+            commands::set_auto_switch_enabled,
+            commands::is_auto_switch_enabled,
+            commands::get_profile_for_game,
         ])
         .setup(move |app| {
             // ---- tray -----------------------------------------------------

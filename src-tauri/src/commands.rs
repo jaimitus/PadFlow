@@ -13,6 +13,7 @@ use crate::input::gamepad::{
     apply_curve, shape_stick, CurveKind, EngineStats, GamepadInfo, InputSnapshot,
     StickAxisProfile, StickProfileConfig, TriggerProfile,
 };
+use crate::game_detector::{GameProfile, DetectedGame};
 use crate::AppState;
 
 // ---------------------------------------------------------------------------

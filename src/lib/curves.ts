@@ -122,6 +122,8 @@ export const DEFAULT_PROFILE: StickProfileConfig = {
   batteryLedMode: false,
   rumbleIntensity: 1,
   turboPolling: true,
+  batterySaver: false,
+  aiCurveOptimization: false,
 };
 
 export const PRESETS: PadProfilePreset[] = [
@@ -161,6 +163,8 @@ export const PRESETS: PadProfilePreset[] = [
       batteryLedMode: true,
       rumbleIntensity: 0.35,
       turboPolling: true,
+      batterySaver: false,
+      aiCurveOptimization: true,
     },
   },
   {
@@ -198,6 +202,8 @@ export const PRESETS: PadProfilePreset[] = [
       batteryLedMode: true,
       rumbleIntensity: 1,
       turboPolling: true,
+      batterySaver: false,
+      aiCurveOptimization: false,
     },
   },
   {
@@ -235,6 +241,8 @@ export const PRESETS: PadProfilePreset[] = [
       batteryLedMode: false,
       rumbleIntensity: 0.15,
       turboPolling: true,
+      batterySaver: false,
+      aiCurveOptimization: false,
     },
   },
 ];

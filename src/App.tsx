@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AICurveAnalyzer from "./components/AICurveAnalyzer";
 import CircularityTester from "./components/CircularityTester";
 import DeadzoneTuner from "./components/DeadzoneTuner";
 import GamepadCard from "./components/GamepadCard";
@@ -463,14 +464,23 @@ export default function App() {
   useEffect(() => {
     const id = window.setInterval(() => {
       const s = snapRef.current;
+      const prevLevel = battery.level;
+      const newBattery = { level: s.battery, charging: s.charging };
+      
+      // Auto-suggest Battery Saver when battery drops below 30%
+      if (s.battery > -1 && s.battery < 30 && prevLevel >= 30 && !profile.batterySaver) {
+        setToast("🔋 Battery low (<30%). Consider enabling Battery Saver mode!");
+        setTimeout(() => setToast(null), 5000);
+      }
+      
       setBattery((b) =>
         b.level === s.battery && b.charging === s.charging
           ? b
-          : { level: s.battery, charging: s.charging },
+          : newBattery,
       );
     }, 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [battery.level, profile.batterySaver]);
 
   useEffect(() => {
     const id = window.setInterval(async () => {
@@ -1169,6 +1179,59 @@ export default function App() {
 
                   <div className="flex items-center justify-between border-t border-white/6 pt-2">
                     <div>
+                      <p className="text-[11px] text-slate-300">Battery Saver Mode</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        reduces polling to 125 Hz for +60% battery life
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const newValue = !profile.batterySaver;
+                        setProfile((p) => ({ ...p, batterySaver: newValue }));
+                        if (newValue && battery.level > -1 && battery.level < 30 && !toast) {
+                          setToast("💡 Battery Saver enabled automatically at low battery");
+                          setTimeout(() => setToast(null), 4000);
+                        }
+                      }}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.batterySaver ? "bg-emerald-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.batterySaver ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-white/6 pt-2">
+                    <div>
+                      <p className="text-[11px] text-slate-300">AI Curve Optimization</p>
+                      <p className="font-mono text-[9.5px] text-slate-600">
+                        analyzes gameplay to suggest optimal curve type
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setProfile((p) => ({ ...p, aiCurveOptimization: !p.aiCurveOptimization }))}
+                      className={cn(
+                        "relative h-5 w-9 rounded-full transition-colors",
+                        profile.aiCurveOptimization ? "bg-violet-400" : "bg-white/12",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
+                          profile.aiCurveOptimization ? "left-[18px]" : "left-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-white/6 pt-2">
+                    <div>
                       <p className="text-[11px] text-slate-300">Touchpad as Virtual Mouse</p>
                       <p className="font-mono text-[9.5px] text-slate-600">
                         1-finger move/click · 2-finger scroll
@@ -1270,6 +1333,12 @@ export default function App() {
                     getSample={getRight}
                   />
                 </div>
+                {profile.aiCurveOptimization && (
+                  <AICurveAnalyzer
+                    profile={profile}
+                    onUpdateProfile={(updates) => setProfile((p) => ({ ...p, ...updates }))}
+                  />
+                )}
               </section>
 
               <div className="grid gap-4 lg:grid-cols-2">

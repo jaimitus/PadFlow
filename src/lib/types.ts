@@ -39,6 +39,8 @@ export interface StickAxisProfile {
   sensitivity: number;
   invertY: boolean;
   radial: boolean;
+  aiOptimized: boolean;
+  aiLearningRate: number;
 }
 
 export interface TriggerProfile {
@@ -58,6 +60,11 @@ export interface StickProfileConfig {
   batteryLedMode: boolean;
   rumbleIntensity: number;
   turboPolling: boolean;
+  adaptivePolling: boolean;
+  targetPollHz: number;
+  batchReports: boolean;
+  batterySaver: boolean;
+  aiCurveOptimization: boolean;
 }
 
 export interface InputSnapshot {
@@ -100,6 +107,20 @@ export interface EngineStats {
   droppedReports: number;
   reconnects: number;
   driver: string;
+  batteryLevel: number;
+  aiOptimizationActive: boolean;
+  aiConfidenceScore: number;
+  adaptivePollingActive: boolean;
+  targetPollHz: number;
+  currentPollHz: number;
+  batchReportsActive: boolean;
+  reportsBatched: number;
+  batchSizeAvg: number;
+  cpuUsagePercent: number;
+  threadPriority: string;
+  aiSamplesCollected: number;
+  aiSamplesTarget: number;
+  aiAnalysisComplete: boolean;
 }
 
 export interface EngineStatus {
@@ -153,4 +174,27 @@ export interface PadProfilePreset {
   tagline: string;
   accent: string;
   config: StickProfileConfig;
+}
+
+// Game Detection types
+export interface GameProfile {
+  gameId: string;
+  executableName: string;
+  gameTitle: string;
+  recommendedProfile: StickProfileConfig;
+  aiCurveOptimization: boolean;
+  batterySaverRecommended: boolean;
+  batteryThreshold: number;
+  iconPath: string | null;
+  lastPlayed: number | null;
+  playTimeSeconds: number;
+}
+
+export interface DetectedGame {
+  gameId: string;
+  executableName: string;
+  gameTitle: string;
+  processId: number;
+  detectedAt: number;
+  profileApplied: boolean;
 }
