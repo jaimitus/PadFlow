@@ -101,6 +101,8 @@ const axis = (o: Partial<StickAxisProfile> = {}): StickAxisProfile => ({
   sensitivity: 1,
   invertY: false,
   radial: true,
+  aiOptimized: false,
+  aiLearningRate: 0.1,
   ...o,
 });
 
@@ -122,6 +124,9 @@ export const DEFAULT_PROFILE: StickProfileConfig = {
   batteryLedMode: false,
   rumbleIntensity: 1,
   turboPolling: true,
+  adaptivePolling: false,
+  targetPollHz: 500,
+  batchReports: false,
   batterySaver: false,
   aiCurveOptimization: false,
 };

@@ -1,83 +1,44 @@
 ```
 # Dependencies
 node_modules/
-target/
-**/vendor/
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
+# Build artifacts
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Virtual environments
-venv/
-ENV/
-env.bak/
-.venv/
+# IDE files
+.vscode/
 
-# Tauri
-src-tauri/target/
+# Environment variables
+.env*
+!.env.example
 
 # Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
 
 # OS generated files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-iTunes_Control.db
 Thumbs.db
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Environment variables
-.env
-.env.local
-.env.*
-
-# Testing
-.coverage
-htmlcov/
-.nyc_output/
-coverage/
-junit.xml
-
-# Build outputs
-dist/
-build/
-*.min.js
-*.min.css
-
-# Rust (Tauri dependencies)
-Cargo.lock
+# Rust/Cargo (since there's a mouse_driver with Cargo.toml)
 target/
+Cargo.lock
 **/*.rs.bk
+
+# TypeScript/JavaScript
+*.tsbuildinfo
+*.tsx.swp
+*.js.swp
+
+# Vite specific
+.vite/
+
+# Tauri specific
+**/tauri.conf.json
+**/src-tauri/
+
 ```

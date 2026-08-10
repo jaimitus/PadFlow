@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { StickProfileConfig, InputSnapshot } from "../lib/types";
+import type { StickProfileConfig } from "../lib/types";
 
 interface SampleBuffer {
   inputs: number[];

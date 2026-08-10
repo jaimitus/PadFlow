@@ -1,9 +1,67 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { GameProfile, DetectedGame, StickProfileConfig } from '../types';
-import { Card } from './ui/Card';
-import { Button } from './ui/Button';
-import { Badge } from './ui/Badge';
+import { GameProfile, DetectedGame } from '../lib/types';
+
+interface CardProps {
+  children: React.ReactNode;
+  className?: string;
+}
+
+function Card({ children, className = '' }: CardProps) {
+  return (
+    <div className={`bg-gray-900 rounded-lg border border-gray-700 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: 'primary' | 'secondary' | 'outline' | 'danger';
+  size?: 'sm' | 'md' | 'lg';
+  children: React.ReactNode;
+}
+
+function Button({ variant = 'primary', size = 'md', children, className = '', ...props }: ButtonProps) {
+  const baseStyles = 'inline-flex items-center justify-center font-medium rounded transition-colors';
+  const variantStyles = {
+    primary: 'bg-violet-600 hover:bg-violet-700 text-white',
+    secondary: 'bg-gray-700 hover:bg-gray-600 text-white',
+    outline: 'border border-gray-600 hover:bg-gray-800 text-white',
+    danger: 'bg-red-600 hover:bg-red-700 text-white',
+  };
+  const sizeStyles = {
+    sm: 'px-3 py-1.5 text-sm',
+    md: 'px-4 py-2 text-base',
+    lg: 'px-6 py-3 text-lg',
+  };
+  
+  return (
+    <button className={`${baseStyles} ${variantStyles[variant]} ${sizeStyles[size]} ${className}`} {...props}>
+      {children}
+    </button>
+  );
+}
+
+interface BadgeProps {
+  children: React.ReactNode;
+  variant?: 'default' | 'success' | 'warning' | 'danger' | 'secondary';
+}
+
+function Badge({ children, variant = 'default' }: BadgeProps) {
+  const variantStyles = {
+    default: 'bg-gray-700 text-gray-200',
+    success: 'bg-emerald-700 text-emerald-100',
+    warning: 'bg-amber-700 text-amber-100',
+    danger: 'bg-red-700 text-red-100',
+    secondary: 'bg-violet-700 text-violet-100',
+  };
+  
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${variantStyles[variant]}`}>
+      {children}
+    </span>
+  );
+}
 
 interface GameLibraryProps {
   onProfileApplied?: (game: GameProfile) => void;
@@ -49,7 +107,7 @@ export function GameLibrary({ onProfileApplied }: GameLibraryProps) {
 
   async function checkAutoSwitch() {
     try {
-      const enabled: bool = await invoke('is_auto_switch_enabled');
+      const enabled: boolean = await invoke('is_auto_switch_enabled');
       setAutoSwitchEnabled(enabled);
     } catch (error) {
       console.error('Failed to check auto-switch status:', error);
@@ -231,8 +289,7 @@ export function GameLibrary({ onProfileApplied }: GameLibraryProps) {
                   variant="primary"
                   size="sm"
                   className="w-full mt-3"
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  onClick={() => {
                     handleApplyProfile(profile);
                   }}
                 >
@@ -282,17 +339,29 @@ function AddGameModal({ onClose, onAdd }: AddGameModalProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    if (!formData.executableName || !formData.gameTitle) return;
+
     const profile: GameProfile = {
       gameId: formData.gameId || formData.executableName.replace('.exe', ''),
-      executableName: formData.executableName!,
-      gameTitle: formData.gameTitle || formData.executableName,
+      executableName: formData.executableName,
+      gameTitle: formData.gameTitle,
       recommendedProfile: {
+        left: { innerDeadzone: 0.1, outerDeadzone: 0.95, antiDeadzone: 0, curve: 'linear', curvePower: 1, sensitivity: 1, invertY: false, radial: true, aiOptimized: false, aiLearningRate: 0.1 },
+        right: { innerDeadzone: 0.1, outerDeadzone: 0.95, antiDeadzone: 0, curve: 'linear', curvePower: 1, sensitivity: 1, invertY: false, radial: true, aiOptimized: false, aiLearningRate: 0.1 },
+        triggerLeft: { innerDeadzone: 0, outerDeadzone: 1, hairTrigger: false },
+        triggerRight: { innerDeadzone: 0, outerDeadzone: 1, hairTrigger: false },
+        flipTriggers: false,
+        touchpadMouse: false,
+        touchpadSensitivity: 1,
+        batteryLedMode: true,
+        rumbleIntensity: 1,
+        turboPolling: false,
         adaptivePolling: true,
         targetPollHz: 1000,
         batchReports: false,
         batterySaver: false,
         aiCurveOptimization: formData.aiCurveOptimization ?? true,
-      } as StickProfileConfig,
+      },
       aiCurveOptimization: formData.aiCurveOptimization ?? true,
       batterySaverRecommended: formData.batterySaverRecommended ?? false,
       batteryThreshold: formData.batteryThreshold ?? 30,

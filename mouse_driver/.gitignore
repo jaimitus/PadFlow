@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock file (optional, commit if you want reproducible builds)
+# Cargo.lock
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
