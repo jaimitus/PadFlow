@@ -17,8 +17,45 @@ permissions:
   contents: write
 
 jobs:
+  # Release gate: run the full deterministic fuzz suite (500k parser
+  # buffers + 200k CRC combos + 200k hot-loop reports) BEFORE anything is
+  # published. Runs in parallel with the release build; if it fails, the
+  # release never goes out.
+  deep-fuzz:
+    name: Deep fuzz (release gate)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri::generate_context!() embeds ../dist at compile time, so the
+      # frontend must exist before the Rust test build (same as manifest-check).
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run deep fuzz (500k parsers + 200k CRC + 200k hot loop)
+        working-directory: src-tauri
+        run: cargo test -- --ignored deep_fuzz_500k_parsers_and_crc
+
   release:
     name: Build, sign & publish ${{ inputs.tag || github.ref_name }}
+    # Gate: never publish until the deep fuzz suite passes.
+    needs: deep-fuzz
     runs-on: windows-latest
     timeout-minutes: 60
     env:
