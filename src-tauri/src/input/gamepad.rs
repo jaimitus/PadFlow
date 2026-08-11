@@ -2050,6 +2050,23 @@ mod tests {
     }
 
     #[test]
+    fn gyro_rest_still_threshold_boundary() {
+        // Magnitude exactly at the still threshold is NOT still (`<`), so a
+        // calibrated pad holds its rest offset instead of folding.
+        let (rest, cal) = gyro_update_rest([GYRO_STILL_THRESHOLD, 0.0, 0.0], [0.1, 0.0, 0.0], true, false);
+        assert!(cal);
+        assert_eq!(rest, [0.1, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn gyro_force_recalibration_works_on_uncalibrated_pad() {
+        // Force ignores both the calibrated flag and the motion magnitude.
+        let (rest, cal) = gyro_update_rest([0.6, 0.0, 0.0], [0.0; 3], false, true);
+        assert!(cal);
+        assert_eq!(rest, [0.6, 0.0, 0.0]);
+    }
+
+    #[test]
     fn gyro_smoothing_converges_toward_signal() {
         // A constant input converges to itself under the EMA.
         let raw = [0.2, 0.0, 0.0];
@@ -2081,6 +2098,13 @@ mod tests {
         // alpha above 0.95 clamps to 0.95 — the EMA can never be fully sticky.
         let out = gyro_smooth([0.5, 0.0, 0.0], [0.0; 3], [0.0; 3], 2.0);
         assert!((out[0] - 0.025).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gyro_smoothing_negative_alpha_clamps_to_zero() {
+        // alpha below 0 clamps to 0 → passthrough, never anti-smoothed.
+        let out = gyro_smooth([0.5, 0.0, 0.0], [0.0; 3], [99.0; 3], -1.0);
+        assert_eq!(out, [0.5, 0.0, 0.0]);
     }
 
     #[test]
