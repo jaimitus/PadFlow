@@ -1,0 +1,78 @@
+name: Changelog - auto-update CHANGELOG.md
+
+# Trigger: every time a release is published on GitHub (by the release pipeline
+# or manually), prepend its release notes to CHANGELOG.md and push to main.
+# Can also be run manually with a tag input to backfill an entry.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to add to CHANGELOG.md (e.g. v1.2.4)"
+        required: true
+
+# Serialize runs so two releases published in a row never clobber each other.
+concurrency:
+  group: changelog
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    name: Prepend release notes to CHANGELOG.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepend release notes
+        id: prepend
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          DATE=$(date -u +%Y-%m-%d)
+
+          # Idempotency: skip when an entry for this version already exists.
+          if grep -Fq "## [${VERSION}]" CHANGELOG.md; then
+            echo "OK - CHANGELOG.md already has an entry for v${VERSION}, skipping"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fetch the release body via the API (avoids YAML-escaping issues
+          # with quotes/newlines in ${{ github.event.release.body }}).
+          NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .body)
+
+          # Drop a leading markdown title line ("# PadFlow vX.Y.Z — ...") — the
+          # version is already in the new heading we add.
+          NOTES=$(printf '%s\n' "$NOTES" | awk 'NR==1 && /^# / { next } { print }')
+
+          {
+            printf '## [%s] - %s\n\n' "$VERSION" "$DATE"
+            printf '%s\n' "$NOTES"
+            printf '\n---\n\n'
+            cat CHANGELOG.md
+          } > CHANGELOG.tmp
+          mv CHANGELOG.tmp CHANGELOG.md
+          echo "OK - changelog entry added for v${VERSION}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.prepend.outputs.changed == 'true'
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: add changelog entry for ${TAG}"
+          git push origin main
+          echo "OK - CHANGELOG.md updated on main"

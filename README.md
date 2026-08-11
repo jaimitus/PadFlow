@@ -24,103 +24,9 @@
 
 ---
 
-### 🚀 What's New in v1.2.3 / Novedades de la Versión 1.2.3
+## 📜 Changelog
 
-- **🔐 Always elevated — `requireAdministrator` manifest:**
-  - Release binaries embed a Windows manifest requesting Administrator privileges, so the UAC prompt appears at launch and the entire session runs elevated.
-  - The in-app **"RESTART AS ADMIN"** banner is gone — HidHide cloaking, registry writes and driver helpers always have full privileges from the first second.
-
----
-
-### 🚀 What's New in v1.2.2 / Novedades de la Versión 1.2.2
-
-- **🛡️ CLOAK ALL truly fixed — correct HidHide IOCTL contract:**
-  - The root cause of *"No PlayStation controllers to cloak"* was finally found: PadFlow used `FILE_DEVICE_UNKNOWN` as the IOCTL device type, but the HidHide driver expects its **custom device type 32769**. Every IOCTL was rejected with `ERROR_INVALID_PARAMETER (87)` — cloaking never reached the driver.
-  - v1.2.2 mirrors the official `HidHideIoctlContract.h` from the Nefarius driver (device type `0x8001`, `METHOD_BUFFERED`, `FILE_READ_DATA`), so blacklist/whitelist/active writes now reach the driver and **cloaking works — even without Administrator rights** (the driver persists to the registry in kernel mode).
-
----
-
-### 🚀 What's New in v1.2.1 / Novedades de la Versión 1.2.1
-
-- **🔐 Cloak Fix — Real error reporting + Administrator elevation:**
-  - HidHide rejects blacklist writes from non-elevated processes, which made **CLOAK ALL** silently report *"No PlayStation controllers to cloak"* even with a pad connected. v1.2.1 surfaces the **real cause** instead of hiding it.
-  - New **elevation banner** with a **"RESTART AS ADMINISTRATOR"** button — one click relaunches PadFlow with UAC, and cloaking works instantly.
-  - HidHide read/write errors are now propagated end-to-end (registry + IOCTL), so toasts tell you exactly what failed and why.
-  - CLOAK ALL now reports *what* was found: detected controller names, PS pads, and per-device errors.
-
----
-
-### 🚀 What's New in v1.2.0 / Novedades de la Versión 1.2.0
-
-- **🛡️ Shield Control Center:**
-  - Per-controller **CLOAK / UNCLOAK** buttons right on every gamepad card, with a live **CLOAKED / VISIBLE** badge per pad.
-  - Global shield **ON/OFF switch**, one-click **CLOAK ALL** / **UNCLOAK ALL**, and a live list of hidden devices with counter.
-  - **Auto-cloak on connect** (new pads hide as they plug in) and **Cloak on startup** (already-connected pads hide at launch) — both persisted and toggleable.
-  - **Tray integration:** cloak / uncloak all controllers straight from the system-tray icon, no need to open the window.
-  - "CLOAK ALL" now only hides **PlayStation** pads — never touches Xbox controllers.
-- **⚡ Live shield status:** the app now auto-refreshes HidHide state every 3 s, so edits made in the official HidHideClient GUI are reflected instantly.
-
----
-
-### 📜 Version History
-
-#### v1.2.4 — CI Manifest Check & Automated Release Pipeline
-
-- **🤖 CI manifest check:** GitHub Actions verifies on every push that the release exe embeds `requireAdministrator` and the debug exe does not.
-- **🚀 Automated release pipeline:** tagging `v*.*.*` triggers a workflow that builds, signs and publishes the release — NSIS, MSI, portable, `.sig` files and `latest.json` — with a version triple-guard (`tauri.conf.json` + `package.json` + `Cargo.toml`).
-
-#### v1.2.3 — Always Elevated: requireAdministrator Manifest
-
-- **🔐 UAC at launch:** a `requireAdministrator` manifest is embedded in the release binaries — PadFlow starts elevated every time, so HidHide cloaking, registry writes and driver installers always have full privileges (no in-app elevation banner needed).
-
-#### v1.2.2 — CLOAK ALL Fixed: Correct HidHide IOCTL Contract
-
-- **🛡️ Root cause finally fixed:** PadFlow sent HidHide IOCTLs with device type `FILE_DEVICE_UNKNOWN`, but the driver only accepts its custom type `32769` — every write was rejected with error 87 and cloaking never worked, elevated or not.
-- **📏 Exact contract match:** IOCTL codes now mirror the official `HidHideIoctlContract.h` (type `0x8001`, `METHOD_BUFFERED`, `FILE_READ_DATA`). Blacklist, whitelist and active-state writes reach the driver and persist to the registry from kernel mode — no Administrator rights required.
-
-#### v1.2.1 — Cloak Fix: Real Errors & Administrator Elevation
-
-- **🔐 HidHide cloaking fixed:** HidHide writes need Administrator rights; previously failures were swallowed and the app reported "No PlayStation controllers to cloak" even with a pad connected.
-- **🔃 "RESTART AS ADMINISTRATOR" button** appears automatically when PadFlow is not elevated.
-- **🗯️ Honest diagnostics:** every HidHide error (registry + IOCTL) now reaches the UI toast with the exact cause; CLOAK ALL lists detected controllers and per-device failures.
-
-#### v1.2.0 — Shield Control Center
-
-- **🛡️ Shield Control Center:**
-  - Per-controller **CLOAK / UNCLOAK** buttons on every gamepad card with live **CLOAKED / VISIBLE** badges.
-  - Global shield switch, **CLOAK ALL** / **UNCLOAK ALL**, hidden-devices list, auto-cloak on connect, cloak on startup.
-  - **Tray controls** for cloaking without opening the window; 3 s live HidHide status refresh.
-
-#### v1.1.1 — Automatic Update Detection via GitHub
-
-- **⬆️ Automatic Update Detection via GitHub:**
-  - New **"Check update"** button in the header plus a silent background check a few seconds after launch.
-  - A notification popup appears automatically whenever a **new release is published on GitHub**, showing the release notes.
-  - One-click **"Download & install"** with live progress bar, signature-verified signed updates and an automatic restart flow — or open the GitHub release page to grab the portable/installer manually.
-- **🔑 Signed Update Pipeline:**
-  - Fully configured `tauri-plugin-updater` with Ed25519-signed bundles (`latest.json` manifest published on every GitHub release).
-  - "Check update" button always reports the exact state: checking / update available / up to date / error.
-
----
-
-### 📜 Version History
-
-#### v1.1.0 — Enhanced HidHide Cloak Firewall & Zero-Freeze HID Engine
-
-- **🛡️ Enhanced HidHide Cloak Firewall:**
-  - Direct low-level IOCTL communication (`\\.\HidHide`) and synchronized registry integration with the official Nefarius HidHide driver.
-  - 1-Click global cloak toggle with real-time hidden instance count reporting.
-  - Automatic whitelisting of PadFlow executable to prevent self-cloaking.
-  - Direct **"Open Official HidHide Config"** launcher button to easily configure blacklists/whitelists in the official `HidHideClient.exe` GUI.
-- **⚡ Zero-Freeze HID Engine & PnP Safety:**
-  - Removed disruptive background PnP restarts, eliminating device detachments, thread stalls, and latency spikes.
-  - Instantaneous, non-blocking start/stop lifecycle for the virtual Xbox 360 emulation pipeline.
-- **🎮 Persistent Controller State & Real-Time Telemetry:**
-  - Gamepad cards and live input feedback stay visible and responsive even when emulation is stopped.
-  - Real-time 60 FPS stick coordinate tracing on the interactive HTML5 canvas.
-  - Accurate battery levels, connection type indicators (USB / Bluetooth), sub-millisecond latency tracking, and polling rate counters.
-- **🔧 Driver Setup & Diagnostic Helper:**
-  - Automatic detection of ViGEmBus and HidHide driver installations with interactive 1-click download/install helpers for official signed installers.
+Every release is documented in **[CHANGELOG.md](./CHANGELOG.md)** — full history from v1.0.0, kept **automatically up to date** by GitHub Actions (the release notes are prepended on every published release).
 
 ---
 
@@ -224,7 +130,7 @@ npm run tauri build
 ## 🚀 Cutting a Release (Automated Pipeline)
 
 Releases are **fully automated by GitHub Actions** — no local build, signing or
-upload needed. Two workflows guard the pipeline:
+upload needed. Three workflows guard the pipeline:
 
 1. **`CI - Windows manifest check`** — runs on every push/PR touching `src-tauri/**`
    and verifies the release exe embeds `requireAdministrator` (elevated manifest)
@@ -235,13 +141,16 @@ upload needed. Two workflows guard the pipeline:
    the GitHub release with **all assets** (NSIS installer, MSI, portable exe,
    `.sig` signatures and `latest.json`), and the in-app updater picks it up
    automatically.
+3. **`Changelog - auto-update CHANGELOG.md`** — runs on every published release
+   and prepends the release notes to `CHANGELOG.md` automatically.
 
 ### How to release a new version (3 steps)
 
 ```bash
 # 1. Bump the version everywhere (package.json, package-lock.json,
 #    src/lib/version.ts, src-tauri/Cargo.toml, src-tauri/tauri.conf.json)
-#    and update README.md + RELEASE_NOTES.md.
+#    and write RELEASE_NOTES.md (the release notes — the changelog entry is added
+#    to CHANGELOG.md automatically when the release is published).
 
 # 2. Commit and push the bump.
 
