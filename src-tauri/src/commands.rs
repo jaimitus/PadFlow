@@ -91,6 +91,15 @@ pub fn update_stick_profile(
     if profile_data.touchpad_sensitivity < 0.1 || profile_data.touchpad_sensitivity > 5.0 {
         return Err("touchpad_sensitivity must be within 0.1..=5.0".into());
     }
+    if profile_data.button_map.len() != 16 || profile_data.button_map.iter().any(|&b| b > 15) {
+        return Err("button_map must contain 16 entries, each in 0..=15".into());
+    }
+    if profile_data.gyro_sensitivity < 0.1 || profile_data.gyro_sensitivity > 8.0 {
+        return Err("gyro_sensitivity must be within 0.1..=8.0".into());
+    }
+    if !(0.0..=0.95).contains(&profile_data.gyro_smoothing) {
+        return Err("gyro_smoothing must be within 0.0..=0.95".into());
+    }
     state.engine.set_profile_for(pad_id.as_deref(), profile_data);
     let _ = app.emit(
         "padflow-profile-updated",
@@ -349,6 +358,7 @@ pub fn preview_curve(req: CurvePreviewRequest) -> Result<Vec<[f32; 2]>, String> 
         sensitivity: 1.0,
         invert_y: false,
         radial: true,
+        circularity_correction: false,
     };
     let mut out = Vec::with_capacity(n as usize + 1);
     for i in 0..=n {
@@ -407,6 +417,158 @@ pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
     #[allow(deprecated)]
     app.shell().open(url, None).map_err(|e| e.to_string())
+}
+
+/// Forces the gyro rest offset to be re-captured (v1.2.5). Call this right
+/// after the user holds the pad perfectly still for a moment.
+#[tauri::command]
+pub fn recalibrate_gyro(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.recalibrate_gyro();
+    Ok(())
+}
+
+/// Returns the executable name of the foreground application (lowercase),
+/// used by per-game profile auto-switching (v1.2.5).
+#[cfg(windows)]
+#[tauri::command]
+pub fn get_foreground_app() -> Result<Option<String>, String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return Ok(None);
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
+        if pid == 0 {
+            return Ok(None);
+        }
+        let proc = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let pwstr = windows::core::PWSTR::from_raw(buf.as_mut_ptr());
+        let _ = QueryFullProcessImageNameW(
+            proc,
+            windows::Win32::System::Threading::PROCESS_NAME_FORMAT(0),
+            pwstr,
+            &mut len as *mut u32,
+        );
+        let _ = CloseHandle(proc);
+        if len == 0 || len > buf.len() as u32 {
+            return Ok(None);
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let exe = path.rsplit('\\').next().unwrap_or("").to_lowercase();
+        Ok((!exe.is_empty()).then_some(exe))
+    }
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn get_foreground_app() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+/// One-click diagnostic report for support requests (v1.2.5).
+#[tauri::command]
+pub fn get_diagnostic_report(state: State<'_, AppState>) -> Result<String, String> {
+    let stats = state.engine.stats();
+    let devices = state.engine.devices();
+    let hid = hidhide::get_status();
+    let vigem = vigem_client::Client::connect().is_ok();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let lines = vec![
+        format!("PadFlow diagnostic report"),
+        format!("Generated: {now} (unix)"),
+        format!("App version: {}", env!("CARGO_PKG_VERSION")),
+        format!("Platform: {} / {}", std::env::consts::OS, std::env::consts::ARCH),
+        format!("ViGEmBus reachable: {vigem}"),
+        format!("HidHide installed: {}", hid.installed),
+        format!("HidHide active: {}", hid.active),
+        format!("HidHide whitelisted: {}", hid.whitelisted),
+        format!("Hidden device entries: {}", hid.hidden_devices.len()),
+        format!("Connected pads: {}", devices.len()),
+    ];
+    let mut report = lines.join("\n");
+    for d in &devices {
+        report.push_str(&format!(
+            "\n  - {} ({} / {}) bat={}% conn={:?}",
+            d.name, d.id, d.path, d.battery, d.connection
+        ));
+    }
+    report.push_str(&format!(
+        "\nEngine: running={} polls={} hz={} avg_latency_us={} dropped={} reconnects={}",
+        stats.running, stats.polls, stats.poll_hz, stats.avg_latency_us, stats.dropped_reports, stats.reconnects
+    ));
+    Ok(report)
+}
+
+/// Persists app settings (start minimized, tray behaviour, autostart) to
+/// `settings.json` and applies side-effects immediately (v1.2.5).
+#[tauri::command]
+pub fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("config dir unavailable: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if let Some(b) = settings.get("autostart").and_then(|v| v.as_bool()) {
+        set_autostart_registry(b)?;
+    }
+    Ok(())
+}
+
+/// Loads the persisted settings JSON (empty object when absent).
+#[tauri::command]
+pub fn load_settings(app: AppHandle) -> Result<serde_json::Value, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("config dir unavailable: {e}"))?;
+    let path = dir.join("settings.json");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        Err(_) => Ok(serde_json::json!({})),
+    }
+}
+
+/// Writes/removes the HKCU Run entry via `reg.exe` (zero extra deps).
+fn set_autostart_registry(enabled: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        if enabled {
+            let quoted = format!("\"{}\"", exe.to_string_lossy());
+            let st = std::process::Command::new("reg")
+                .args(["add", key, "/v", "PadFlow", "/t", "REG_SZ", "/d", &quoted, "/f"])
+                .status()
+                .map_err(|e| format!("reg add failed: {e}"))?;
+            if !st.success() {
+                return Err("autostart: reg add failed".into());
+            }
+        } else {
+            let _ = std::process::Command::new("reg")
+                .args(["delete", key, "/v", "PadFlow", "/f"])
+                .status();
+        }
+    }
+    Ok(())
 }
 
 /// Launches the ViGEmBus driver installer with UAC Administrator privileges.

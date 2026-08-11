@@ -4,7 +4,7 @@
 // package.json, src-tauri/Cargo.toml and src-tauri/tauri.conf.json).
 // ---------------------------------------------------------------------------
 
-export const APP_VERSION = "1.2.4";
+export const APP_VERSION = "1.2.5";
 
 export const REPO_OWNER = "jaimitus";
 export const REPO_NAME = "PadFlow";

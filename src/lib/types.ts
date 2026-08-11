@@ -11,6 +11,8 @@ export type ConnectionType = "usb" | "bluetooth";
 
 export type CurveKind = "linear" | "exponential" | "sCurve" | "aggressive";
 
+export type GyroMode = "mouse" | "rightStick";
+
 export interface GamepadInfo {
   id: string;
   name: string;
@@ -39,6 +41,8 @@ export interface StickAxisProfile {
   sensitivity: number;
   invertY: boolean;
   radial: boolean;
+  /** Compensate the physical stick's elliptical range (auto-measured per pad). */
+  circularityCorrection: boolean;
 }
 
 export interface TriggerProfile {
@@ -58,6 +62,13 @@ export interface StickProfileConfig {
   batteryLedMode: boolean;
   rumbleIntensity: number;
   turboPolling: boolean;
+  /** 16 entries: index = physical PS button bit, value = target bit. */
+  buttonMap: number[];
+  gyroEnabled: boolean;
+  gyroMode: GyroMode;
+  gyroSensitivity: number;
+  gyroSmoothing: number;
+  gyroInvert: boolean;
 }
 
 export interface InputSnapshot {

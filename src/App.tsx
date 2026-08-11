@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ButtonRemapper from "./components/ButtonRemapper";
 import CircularityTester from "./components/CircularityTester";
 import DeadzoneTuner from "./components/DeadzoneTuner";
 import GamepadCard from "./components/GamepadCard";
+import GameProfilesPanel, {
+  type GameMapping,
+} from "./components/GameProfilesPanel";
+import GyroPanel from "./components/GyroPanel";
+import InputOscilloscope from "./components/InputOscilloscope";
 import LiveTelemetry from "./components/LiveTelemetry";
 import ProfileSelector from "./components/ProfileSelector";
+import SettingsPanel, { type AppSettings } from "./components/SettingsPanel";
 import SourceExplorer from "./components/SourceExplorer";
 import StickCurveCanvas from "./components/StickCurveCanvas";
 import TriggerTuner from "./components/TriggerTuner";
 import { DEFAULT_PROFILE, cloneProfile } from "./lib/curves";
+import { useI18n, type Lang } from "./lib/i18n";
 import { padflow } from "./lib/engine";
 import {
   extractAllDeviceInstanceIds,
@@ -87,6 +95,19 @@ export default function App() {
   const [shieldBusy, setShieldBusy] = useState(false);
   const [autoCloak, setAutoCloak] = useState<boolean>(getAutoCloakPreference);
   const [cloakOnStart, setCloakOnStart] = useState<boolean>(getCloakOnStartPreference);
+  const { t, lang, setLang } = useI18n();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>({
+    startMinimized: false,
+    minimizeToTray: true,
+    autostart: false,
+  });
+  const [foreground, setForeground] = useState<string | null>(null);
+  const [gameMappings, setGameMappings] = useState<GameMapping[]>([]);
+  const gameConfigsRef = useRef<Record<string, StickProfileConfig>>({});
+  const activeGameRef = useRef<string | null>(null);
+  const deviceConfigsRef = useRef(deviceConfigs);
+  deviceConfigsRef.current = deviceConfigs;
 
   // ---- update checker state -------------------------------------------------
   const [updateState, setUpdateState] = useState<UpdateCheckState>("idle");
@@ -497,10 +518,83 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [native]);
 
+  // ---- settings + per-game mappings (boot) -------------------------------
+  useEffect(() => {
+    padflow
+      .loadSettings()
+      .then((s) => {
+        setSettings((prev) => ({
+          startMinimized:
+            typeof s.startMinimized === "boolean" ? s.startMinimized : prev.startMinimized,
+          minimizeToTray:
+            typeof s.minimizeToTray === "boolean" ? s.minimizeToTray : prev.minimizeToTray,
+          autostart: typeof s.autostart === "boolean" ? s.autostart : prev.autostart,
+        }));
+      })
+      .catch(() => undefined);
+    try {
+      const raw = localStorage.getItem("padflow-game-mappings");
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          exe: string;
+          profileName: string;
+          config: StickProfileConfig;
+        }[];
+        setGameMappings(parsed.map((m) => ({ exe: m.exe, profileName: m.profileName })));
+        for (const m of parsed) {
+          gameConfigsRef.current[m.exe.toLowerCase()] = m.config;
+        }
+      }
+    } catch {
+      /* corrupted storage — start fresh */
+    }
+  }, []);
+
+  // ---- foreground app polling + per-game profile auto-switch --------------
+  useEffect(() => {
+    if (!native) return;
+    let alive = true;
+    const id = window.setInterval(async () => {
+      try {
+        const app = await padflow.getForegroundApp();
+        if (!alive) return;
+        setForeground(app);
+        const exe = app?.toLowerCase() ?? null;
+        const mapped = exe ? gameConfigsRef.current[exe] : undefined;
+        if (mapped && activeGameRef.current !== exe) {
+          activeGameRef.current = exe;
+          setPresetId(null);
+          setProfile(cloneProfile(mapped));
+          notify(t("games.applied", { exe: app ?? exe ?? "" }));
+        } else if (!mapped && activeGameRef.current) {
+          const prev = activeGameRef.current;
+          activeGameRef.current = null;
+          const cfg = deviceConfigsRef.current[selectedIdRef.current ?? ""]?.profile;
+          if (cfg) {
+            setProfile(cloneProfile(cfg));
+            setPresetId(
+              deviceConfigsRef.current[selectedIdRef.current ?? ""]?.presetId ?? null,
+            );
+          }
+          notify(t("games.restored", { app: prev }));
+        }
+      } catch {
+        /* foreground query failed — retried next tick */
+      }
+    }, 1500);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [native, notify]);
+
   // ---- push profile to the engine (debounced) ------------------------------
   useEffect(() => {
     const id = window.setTimeout(() => {
-      if (selectedId) {
+      // While a per-game profile is active, never clobber the controller's own
+      // saved config — the restore on game-exit reads from deviceConfigs.
+      if (selectedId && !activeGameRef.current) {
         setDeviceConfigs((prev) => {
           const cur = prev[selectedId];
           return {
@@ -577,6 +671,121 @@ export default function App() {
       notify(flip ? "Bumper & Trigger swap enabled (L1/R1 ↔ L2/R2)" : "Standard Bumper & Trigger mapping restored");
     },
     [selectedId, notify],
+  );
+
+  const patchProfile = useCallback(
+    (patch: Partial<StickProfileConfig>) => {
+      setPresetId(null);
+      setProfile((p) => {
+        const next = { ...p, ...patch };
+        if (selectedId) {
+          setDeviceConfigs((prev) => ({
+            ...prev,
+            [selectedId]: { profile: next, presetId: null, name: "Custom Calibration" },
+          }));
+        }
+        return next;
+      });
+    },
+    [selectedId],
+  );
+
+  const handleRecalibrateGyro = useCallback(() => {
+    padflow
+      .recalibrateGyro()
+      .then(() => notify("🎯 Gyro center recalibrated"))
+      .catch((e) => notify(`Gyro recalibration failed: ${String(e)}`));
+  }, [notify]);
+
+  const handleSettingsToggle = useCallback(
+    (key: keyof AppSettings) => {
+      setSettings((prev) => {
+        const next = { ...prev, [key]: !prev[key] };
+        padflow.saveSettings({ ...next }).catch(() => undefined);
+        return next;
+      });
+      notify(t("settings.saved"));
+    },
+    [notify, t],
+  );
+
+  const handleLangChange = useCallback(
+    (l: Lang) => {
+      setLang(l);
+      notify(
+        l === "es"
+          ? "Idioma cambiado a Español 🇪🇸"
+          : "Language switched to English 🇬🇧",
+      );
+    },
+    [notify, setLang],
+  );
+
+  const handleCopyDiagnostic = useCallback(async () => {
+    try {
+      const report = await padflow.getDiagnosticReport();
+      await navigator.clipboard.writeText(report);
+      notify(t("settings.reportCopied"));
+    } catch (e) {
+      notify(`Diagnostic report failed: ${String(e)}`);
+    }
+  }, [notify, t]);
+
+  const persistGameMappings = useCallback((list: GameMapping[]) => {
+    try {
+      const data = list.map((m) => ({
+        exe: m.exe,
+        profileName: m.profileName,
+        config:
+          gameConfigsRef.current[m.exe.toLowerCase()] ?? cloneProfile(DEFAULT_PROFILE),
+      }));
+      localStorage.setItem("padflow-game-mappings", JSON.stringify(data));
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+
+  const handleAssignGame = useCallback(() => {
+    if (!foreground) return;
+    const exe = foreground.toLowerCase();
+    gameConfigsRef.current[exe] = cloneProfile(profile);
+    const name =
+      deviceConfigs[selectedId ?? ""]?.name ??
+      (presetId ? "Preset Active" : "Custom Profile");
+    const mapping: GameMapping = { exe: foreground, profileName: name };
+    setGameMappings((prev) => {
+      const next = [...prev.filter((m) => m.exe.toLowerCase() !== exe), mapping];
+      persistGameMappings(next);
+      return next;
+    });
+    activeGameRef.current = exe;
+    notify(t("games.assigned", { exe: foreground }));
+  }, [
+    deviceConfigs,
+    foreground,
+    notify,
+    persistGameMappings,
+    presetId,
+    profile,
+    selectedId,
+    t,
+  ]);
+
+  const handleRemoveGame = useCallback(
+    (exe: string) => {
+      delete gameConfigsRef.current[exe.toLowerCase()];
+      setGameMappings((prev) => {
+        const next = prev.filter((m) => m.exe !== exe);
+        persistGameMappings(next);
+        return next;
+      });
+      if (activeGameRef.current === exe.toLowerCase()) {
+        activeGameRef.current = null;
+        const cfg = deviceConfigsRef.current[selectedIdRef.current ?? ""]?.profile;
+        if (cfg) setProfile(cloneProfile(cfg));
+      }
+    },
+    [persistGameMappings],
   );
 
   const applyPreset = useCallback(
@@ -661,33 +870,33 @@ export default function App() {
                 PadFlow<span className="ml-1.5 font-mono text-[10px] font-normal text-cyan-300">v{APP_VERSION}</span>
               </h1>
               <p className="font-mono text-[10px] text-slate-500">
-                DualShock 4 / DualSense → XInput bridge · ViGEmBus · HidHide Shield · &lt;15 MB RAM
+                {t("app.tagline")}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <Chip
-              label="POLL"
+              label={t("chip.poll")}
               value={`${stats?.pollHz ?? 0} Hz`}
               tone={running ? "good" : "idle"}
             />
             <Chip
-              label="LATENCY"
+              label={t("chip.latency")}
               value={`${latencyMs.toFixed(2)} ms`}
               tone={latencyMs > 0 && latencyMs < 1 ? "good" : "idle"}
             />
             <Chip
-              label="VIRTUAL PAD"
-              value={stats?.virtualPadOnline ? "X360 ONLINE" : "OFFLINE"}
+              label={t("chip.virtualPad")}
+              value={stats?.virtualPadOnline ? t("chip.x360Online") : t("chip.offline")}
               tone={stats?.virtualPadOnline ? "good" : "bad"}
             />
             <Chip
-              label="HIDHIDE"
-              value={hidhideStatus?.installed ? "DRIVER READY 🛡️" : "NOT INSTALLED"}
+              label={t("chip.hidhide")}
+              value={hidhideStatus?.installed ? t("chip.driverReady") : t("chip.notInstalled")}
               tone={hidhideStatus?.installed ? "good" : "warn"}
             />
-            <Chip label="MODE" value={native ? "NATIVE HID" : "WEB PREVIEW"} tone={native ? "good" : "warn"} />
+            <Chip label={t("chip.mode")} value={native ? t("chip.nativeHid") : t("chip.webPreview")} tone={native ? "good" : "warn"} />
 
             <button
               onClick={() => runUpdateCheck(false)}
@@ -710,29 +919,45 @@ export default function App() {
                 {updateState === "checking" ? "◌" : "⬆"}
               </span>
               {updateState === "checking"
-                ? "Checking…"
+                ? t("checking")
                 : updateState === "available"
-                  ? `Update v${updateInfo?.version} ready`
-                  : "Check update"}
+                  ? t("updateReady", { version: updateInfo?.version ?? "…" })
+                  : t("checkUpdate")}
               {updateState === "available" && (
                 <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 pf-live-dot" />
               )}
             </button>
 
             <div className="ml-1 flex rounded-lg border border-white/8 bg-white/5 p-0.5">
-              {(["studio", "source"] as const).map((t) => (
+              {(["studio", "source"] as const).map((tabKey) => (
                 <button
-                  key={t}
-                  onClick={() => setTab(t)}
+                  key={tabKey}
+                  onClick={() => setTab(tabKey)}
                   className={cn(
                     "rounded-md px-3 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors",
-                    tab === t ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300",
+                    tab === tabKey ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300",
                   )}
                 >
-                  {t === "studio" ? "Studio" : "Rust core"}
+                  {tabKey === "studio" ? t("tab.studio") : t("tab.source")}
                 </button>
               ))}
             </div>
+
+            <button
+              onClick={() => handleLangChange(lang === "es" ? "en" : "es")}
+              title="ES/EN"
+              className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-300 transition-all hover:border-cyan-400/40 hover:text-cyan-200 cursor-pointer"
+            >
+              {lang === "es" ? "EN" : "ES"}
+            </button>
+
+            <button
+              onClick={() => setSettingsOpen(true)}
+              title={t("settings.title")}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-sm text-slate-300 transition-all hover:border-cyan-400/40 hover:text-cyan-200 cursor-pointer"
+            >
+              ⚙️
+            </button>
 
             <button
               onClick={toggleEngine}
@@ -749,7 +974,7 @@ export default function App() {
                   running ? "bg-rose-400 pf-live-dot" : "bg-slate-900",
                 )}
               />
-              {running ? "STOP ENGINE" : "START ENGINE"}
+              {running ? t("stopEngine") : t("startEngine")}
             </button>
           </div>
         </header>
@@ -763,10 +988,10 @@ export default function App() {
               </span>
               <div>
                 <p className="text-xs font-semibold text-amber-100">
-                  ViGEmBus Driver Required for Virtual Xbox 360 Pad
+                  {t("banner.vigemTitle")}
                 </p>
                 <p className="font-mono text-[10px] text-amber-300/80">
-                  Input curves and live monitoring work, but games require ViGEmBus to receive mapped inputs.
+                  {t("banner.vigemText")}
                 </p>
               </div>
             </div>
@@ -785,7 +1010,7 @@ export default function App() {
               }}
               className="flex items-center gap-2 rounded-xl bg-amber-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-amber-300 hover:shadow-md hover:shadow-amber-400/20"
             >
-              🛠️ INSTALL VIGEMBUS DRIVER
+              {t("banner.installVigem")}
             </button>
           </div>
         )}
@@ -799,11 +1024,10 @@ export default function App() {
               </span>
               <div>
                 <p className="text-xs font-semibold text-rose-100">
-                  Administrator mode helps when HidHide rejects changes
+                  {t("banner.adminTitle")}
                 </p>
                 <p className="font-mono text-[10px] text-rose-300/80">
-                  Cloaking usually works without it, but if HidHide refuses a write, restart as
-                  Administrator to force the registry fallback.
+                  {t("banner.adminText")}
                 </p>
               </div>
             </div>
@@ -811,7 +1035,7 @@ export default function App() {
               onClick={relaunchAsAdmin}
               className="flex items-center gap-2 rounded-xl bg-rose-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-rose-300 hover:shadow-md hover:shadow-rose-400/20"
             >
-              🔄 RESTART AS ADMINISTRATOR
+              {t("banner.restartAsAdmin")}
             </button>
           </div>
         )}
@@ -825,10 +1049,10 @@ export default function App() {
               </span>
               <div>
                 <p className="text-xs font-semibold text-emerald-100">
-                  HidHide Driver Recommended — Prevent Double-Input Conflicts
+                  {t("banner.hidhideTitle")}
                 </p>
                 <p className="font-mono text-[10px] text-emerald-300/80">
-                  Hides physical DirectInput controllers from games so only the virtual Xbox pad is detected.
+                  {t("banner.hidhideText")}
                 </p>
               </div>
             </div>
@@ -846,7 +1070,7 @@ export default function App() {
               }}
               className="flex items-center gap-2 rounded-xl bg-emerald-400 px-4 py-2 text-xs font-bold text-slate-950 transition-all hover:bg-emerald-300 hover:shadow-md hover:shadow-emerald-400/20"
             >
-              🛡️ INSTALL HIDHIDE DRIVER
+              {t("banner.installHidhide")}
             </button>
           </div>
         )}
@@ -859,8 +1083,8 @@ export default function App() {
             <div className="space-y-4">
               <section>
                 <SectionTitle
-                  title="Controllers"
-                  right={`${devices.length} detected`}
+                  title={t("section.controllers")}
+                  right={t("section.detected", { n: devices.length })}
                 />
                 <div className="space-y-2.5">
                   {devices.map((pad) => (
@@ -893,9 +1117,9 @@ export default function App() {
                   ))}
                   {devices.length === 0 && (
                     <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
-                      <p className="text-sm text-slate-400">No controller detected</p>
+                      <p className="text-sm text-slate-400">{t("noController")}</p>
                       <p className="mt-1 font-mono text-[10px] text-slate-600">
-                        Connect a DualShock 4 / DualSense over USB or Bluetooth
+                        {t("noControllerHint")}
                       </p>
                     </div>
                   )}
@@ -905,7 +1129,7 @@ export default function App() {
               {/* HidHide Shield Control Center */}
               <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
                 <SectionTitle
-                  title="Anti-Double Input Shield"
+                  title={t("section.shield")}
                   right={
                     hidhideStatus?.installed
                       ? hidhideStatus.active
@@ -1108,8 +1332,15 @@ export default function App() {
                 notify={notify}
               />
 
+              <GameProfilesPanel
+                foreground={foreground}
+                mappings={gameMappings}
+                onAssign={handleAssignGame}
+                onRemove={handleRemoveGame}
+              />
+
               <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
-                <SectionTitle title="Engine & Extras" right={stats?.driver ?? "—"} />
+                <SectionTitle title={t("section.engineExtras")} right={stats?.driver ?? "—"} />
                 <div className="grid grid-cols-2 gap-2">
                   <Stat label="Reports" value={(stats?.polls ?? 0).toLocaleString()} />
                   <Stat label="Peak lat." value={`${((stats?.peakLatencyUs ?? 0) / 1000).toFixed(2)} ms`} />
@@ -1251,19 +1482,19 @@ export default function App() {
             <div className="space-y-4">
               <section className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
                 <SectionTitle
-                  title="Stick response matrix"
-                  right="input magnitude → virtual output"
+                  title={t("matrix.title")}
+                  right={t("matrix.right")}
                 />
                 <div className="grid gap-5 lg:grid-cols-2">
                   <StickCurveCanvas
-                    label="Left stick · movement"
+                    label={t("curve.left")}
                     accent={ACCENT_L}
                     profile={profile.left}
                     onChange={(patch) => patchAxis("left", patch)}
                     getSample={getLeft}
                   />
                   <StickCurveCanvas
-                    label="Right stick · aim"
+                    label={t("curve.right")}
                     accent={ACCENT_R}
                     profile={profile.right}
                     onChange={(patch) => patchAxis("right", patch)}
@@ -1274,13 +1505,13 @@ export default function App() {
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <DeadzoneTuner
-                  title="Left stick tuner"
+                  title={t("tuner.left")}
                   accent={ACCENT_L}
                   profile={profile.left}
                   onChange={(patch) => patchAxis("left", patch)}
                 />
                 <DeadzoneTuner
-                  title="Right stick tuner"
+                  title={t("tuner.right")}
                   accent={ACCENT_R}
                   profile={profile.right}
                   onChange={(patch) => patchAxis("right", patch)}
@@ -1307,25 +1538,38 @@ export default function App() {
                 getSnapshot={getSnapshot}
               />
 
+              <GyroPanel
+                config={profile}
+                onChange={patchProfile}
+                hasGyro={!!selected?.hasGyro}
+                onRecalibrate={handleRecalibrateGyro}
+              />
+
+              <ButtonRemapper
+                buttonMap={profile.buttonMap}
+                onChange={(map) => patchProfile({ buttonMap: map })}
+              />
+
               <LiveTelemetry getSnapshot={getSnapshot} flipTriggers={profile.flipTriggers} />
+
+              <InputOscilloscope getSnapshot={getSnapshot} />
             </div>
           </div>
         )}
 
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4 font-mono text-[10px] text-slate-600">
           <span>
-            PadFlow v{APP_VERSION} · open source ·{" "}
+            {t("footer.about", { version: APP_VERSION })} ·{" "}
             <button
               type="button"
               onClick={() => padflow.openUrl("https://github.com/jaimitus/PadFlow")}
               className="text-slate-400 hover:text-cyan-300 underline transition-colors cursor-pointer"
             >
-              github.com/jaimitus/PadFlow
+              GitHub ↗
             </button>
-            {" "}· Windows 10 / 11 · ViGEmBus 1.22+ · HidHide Support
           </span>
           <span>
-            active pad:{" "}
+            {t("footer.activePad")}{" "}
             <span className="text-slate-400">{selected?.name ?? "none"}</span>
           </span>
         </footer>
@@ -1347,10 +1591,10 @@ export default function App() {
                 </span>
                 <div className="min-w-0">
                   <h3 className="text-sm font-bold uppercase tracking-[0.18em] text-white">
-                    Update available
+                    {t("update.available")}
                   </h3>
                   <p className="mt-0.5 font-mono text-[11px] text-cyan-300">
-                    PadFlow v{APP_VERSION} → v{updateInfo.version}
+                    {t("update.fromTo", { from: APP_VERSION, to: updateInfo.version })}
                   </p>
                 </div>
               </div>
@@ -1361,14 +1605,14 @@ export default function App() {
                 </div>
               ) : (
                 <p className="mt-4 text-[11px] text-slate-500">
-                  A new PadFlow release is published on GitHub.
+                  {t("update.released")}
                 </p>
               )}
 
               {installing && (
                 <div className="mt-4">
                   <div className="mb-1 flex items-center justify-between font-mono text-[9.5px] text-slate-400">
-                    <span>{installed ? "Applying update…" : "Downloading update…"}</span>
+                    <span>{installed ? t("update.applying") : t("update.downloading")}</span>
                     <span>
                       {updateProgress && updateProgress.total > 0
                         ? `${Math.min(100, Math.round((updateProgress.downloaded / updateProgress.total) * 100))}% · ${(updateProgress.downloaded / 1048576).toFixed(1)}/${(updateProgress.total / 1048576).toFixed(1)} MB`
@@ -1400,7 +1644,7 @@ export default function App() {
                         onClick={handleRestart}
                         className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-400 to-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-md shadow-emerald-400/20 transition-all hover:brightness-110"
                       >
-                        🔄 Restart PadFlow now
+                        {t("update.restart")}
                       </button>
                     ) : (
                       <>
@@ -1409,14 +1653,14 @@ export default function App() {
                             onClick={handleInstall}
                             className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-md shadow-cyan-400/20 transition-all hover:brightness-110"
                           >
-                            ⬇ Download &amp; install
+                            {t("update.downloadInstall")}
                           </button>
                         )}
                         <button
                           onClick={() => padflow.openUrl(updateInfo.url).catch(() => undefined)}
                           className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-semibold text-slate-300 transition-colors hover:border-white/25 hover:text-white"
                         >
-                          View release
+                          {t("update.viewRelease")}
                         </button>
                       </>
                     )}
@@ -1424,19 +1668,30 @@ export default function App() {
                       onClick={handleDismissUpdate}
                       className="rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-500 transition-colors hover:text-slate-300"
                     >
-                      {installed ? "Later" : "Not now"}
+                      {installed ? t("update.later") : t("update.notNow")}
                     </button>
                   </>
                 )}
                 {installing && !installed && (
                   <span className="font-mono text-[9.5px] text-slate-500">
-                    Keep PadFlow open while the update installs…
+                    {t("update.keepOpen")}
                   </span>
                 )}
               </div>
             </div>
           </div>
         </div>
+      )}
+
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          onToggle={handleSettingsToggle}
+          lang={lang}
+          onLangChange={handleLangChange}
+          onCopyDiagnostic={handleCopyDiagnostic}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
 
       {toast && (

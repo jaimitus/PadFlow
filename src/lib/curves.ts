@@ -101,6 +101,7 @@ const axis = (o: Partial<StickAxisProfile> = {}): StickAxisProfile => ({
   sensitivity: 1,
   invertY: false,
   radial: true,
+  circularityCorrection: false,
   ...o,
 });
 
@@ -110,6 +111,18 @@ const trigger = (o: Partial<TriggerProfile> = {}): TriggerProfile => ({
   hairTrigger: false,
   ...o,
 });
+
+/** Identity button remap: source bit i → target bit i (no change). */
+export const IDENTITY_BUTTON_MAP = Array.from({ length: 16 }, (_, i) => i);
+
+const gyroDefaults = {
+  buttonMap: IDENTITY_BUTTON_MAP,
+  gyroEnabled: false,
+  gyroMode: "mouse" as const,
+  gyroSensitivity: 1,
+  gyroSmoothing: 0.55,
+  gyroInvert: false,
+};
 
 export const DEFAULT_PROFILE: StickProfileConfig = {
   left: axis(),
@@ -122,6 +135,7 @@ export const DEFAULT_PROFILE: StickProfileConfig = {
   batteryLedMode: false,
   rumbleIntensity: 1,
   turboPolling: true,
+  ...gyroDefaults,
 };
 
 export const PRESETS: PadProfilePreset[] = [
@@ -161,6 +175,7 @@ export const PRESETS: PadProfilePreset[] = [
       batteryLedMode: true,
       rumbleIntensity: 0.35,
       turboPolling: true,
+      ...gyroDefaults,
     },
   },
   {
@@ -198,6 +213,7 @@ export const PRESETS: PadProfilePreset[] = [
       batteryLedMode: true,
       rumbleIntensity: 1,
       turboPolling: true,
+      ...gyroDefaults,
     },
   },
   {
@@ -235,6 +251,7 @@ export const PRESETS: PadProfilePreset[] = [
       batteryLedMode: false,
       rumbleIntensity: 0.15,
       turboPolling: true,
+      ...gyroDefaults,
     },
   },
 ];

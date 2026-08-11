@@ -525,6 +525,44 @@ export const padflow = {
     throw new Error("ViGEmBus installation is only available in desktop native mode");
   },
 
+  async getForegroundApp(): Promise<string | null> {
+    if (isNative()) return tauriInvoke<string | null>("get_foreground_app");
+    return null;
+  },
+
+  async recalibrateGyro(): Promise<void> {
+    if (isNative()) {
+      await tauriInvoke("recalibrate_gyro");
+    }
+  },
+
+  async getDiagnosticReport(): Promise<string> {
+    if (isNative()) return tauriInvoke<string>("get_diagnostic_report");
+    return `PadFlow diagnostic report\nApp version: ${APP_VERSION}\nPlatform: web preview (browser)\nViGEmBus reachable: false\nHidHide installed: false\nEngine: simulated`;
+  },
+
+  async saveSettings(settings: Record<string, unknown>): Promise<void> {
+    if (isNative()) {
+      await tauriInvoke("save_settings", { settings });
+      return;
+    }
+    try {
+      localStorage.setItem("padflow-settings", JSON.stringify(settings));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+
+  async loadSettings(): Promise<Record<string, unknown>> {
+    if (isNative()) return tauriInvoke<Record<string, unknown>>("load_settings");
+    try {
+      const raw = localStorage.getItem("padflow-settings");
+      return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  },
+
   async getHidHideStatus(): Promise<HidHideStatus> {
     if (isNative()) return tauriInvoke<HidHideStatus>("get_hidhide_status");
     return web.hidhideStatus();

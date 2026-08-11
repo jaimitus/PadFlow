@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.2.5] - 2026-08-11
+
+### Added
+
+- **🌀 Gyro Motion Control:** aim with the controller — gyro→mouse or gyro→right stick, with sensitivity, smoothing, invert and one-tap recalibration (DualShock 4 / DualSense / DualSense Edge, per profile).
+- **🔄 Real Circularity Correction:** the engine remaps each physical stick's elliptical range toward a perfect circle — beyond the existing measurement tester.
+- **🔘 Button Remapping:** map any of the 14 physical PS buttons to any XInput output (per profile, one-click identity reset).
+- **🎮 Per-Game Profiles:** assign the current profile to a focused game (.exe) and PadFlow auto-switches when that game takes focus, restoring the controller profile on exit.
+- **🌍 Spanish / English (i18n):** full ES/EN localization with a header toggle and persisted preference.
+- **📈 Input Oscilloscope:** live 5 s strip-chart of sticks and triggers.
+- **⚙️ Settings Panel:** start minimized to tray, minimize-to-tray on close, launch at Windows startup (persisted via the backend store).
+- **🩺 Diagnostic Report:** one-tap report with app version, OS, drivers (ViGEmBus / HidHide) and engine stats — copied to the clipboard.
+
+### Changed
+
+- Gyro motion processing, circularity shaping and button remapping now run inside the 1 kHz HID loop.
+- All UI copy is now localized through the new i18n layer (English default, Español available).
+
+---
+
 ## [1.2.4] - 2026-08-09
 
 ### Added

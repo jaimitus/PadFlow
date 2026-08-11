@@ -1,6 +1,6 @@
 # 🎮 PadFlow — Next-Gen Gamepad Input Calibrator & ViGEmBus Bridge
 
-[![Release](https://img.shields.io/badge/Release-v1.2.4-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.5-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
@@ -14,13 +14,16 @@
 
 ---
 
-## 🚀 What's New in v1.2.4 / Novedades de la Versión 1.2.4
+## 🚀 What's New in v1.2.5 / Novedades de la Versión 1.2.5
 
-- **🤖 CI manifest check:** a GitHub Actions workflow runs on every push/PR touching the Rust side and verifies the release exe embeds `requireAdministrator` (elevated manifest) while the debug exe does **not** — elevation can never silently regress.
-- **🚀 Automated release pipeline:** pushing a `v*.*.*` tag now makes GitHub Actions build, **sign** and publish the full release automatically — NSIS installer, MSI, portable exe, `.sig` signatures and `latest.json` for the built-in updater. No more manual builds or uploads.
-  - Version **triple-guard**: the pipeline refuses to run unless the tag matches `tauri.conf.json`, `package.json` **and** `Cargo.toml` (fail-fast with the mismatched file named).
-  - Manual trigger available too (Actions → Run workflow → tag input) for smoke-testing.
-- **🔐 Everything from v1.2.3 kept:** `requireAdministrator` manifest (UAC at launch), correct HidHide IOCTL contract (device type `0x8001`), honest diagnostics, Shield Control Center, auto-cloak, cloak on startup, tray controls, live 3 s status refresh and one-click signed auto-updates.
+- **🌀 Gyro Motion Control:** aim with the controller — gyro→mouse or gyro→right stick, with sensitivity, smoothing, invert and one-tap recalibration. Works on DualShock 4 / DualSense / DualSense Edge and is stored **per profile**.
+- **🔄 Real Circularity Correction:** the engine now remaps each physical stick's elliptical range toward a perfect circle — beyond the existing measurement tester.
+- **🔘 Button Remapping:** map any of the 14 physical PS buttons to any XInput output (cross→A, circle→B, ...) per profile, with a one-click identity reset.
+- **🎮 Per-Game Profiles:** assign the current profile to a focused game (`.exe`) and PadFlow auto-switches to it whenever that game takes focus — restoring your controller profile when you leave.
+- **🌍 Spanish / English (i18n):** the whole UI is now localized (ES/EN) with a header toggle and a persisted preference.
+- **📈 Input Oscilloscope:** live 5 s strip-chart of sticks and triggers.
+- **⚙️ Settings Panel:** start minimized to tray, minimize-to-tray on close, launch at Windows startup (persisted in the backend store).
+- **🩺 Diagnostic Report:** one-tap report with app version, OS, drivers (ViGEmBus / HidHide) and engine stats — copied to the clipboard for support.
 
 ---
 
@@ -85,8 +88,8 @@ PadFlow is **Windows-only (10 / 11, x64)** by design:
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
 
 1. **`PadFlow-Portable.exe`** — Single standalone executable. No installation required.
-2. **`PadFlow_1.2.4_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
-3. **`PadFlow_1.2.4_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
+2. **`PadFlow_1.2.5_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
+3. **`PadFlow_1.2.5_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
 
 > **Note:** PadFlow requires the **ViGEmBus driver** (`v1.22.0+`) for virtual Xbox 360 controller emulation, and supports the **HidHide driver** for anti-double-input device cloaking. If missing, PadFlow provides interactive 1-click in-app installer launchers for both official signed drivers.
 
@@ -158,11 +161,11 @@ upload needed. Three workflows guard the pipeline:
 
 # 2. Commit and push the bump.
 
-git add -A && git commit -m "v1.2.4: <summary of changes>" && git push origin main
+git add -A && git commit -m "v1.2.5: <summary of changes>" && git push origin main
 
 # 3. Tag and push — the pipeline does the rest (build, sign, release, latest.json).
 
-git tag v1.2.4 && git push origin v1.2.4
+git tag v1.2.5 && git push origin v1.2.5
 ```
 
 > **Guardrail:** the workflow refuses to run unless the tag version matches

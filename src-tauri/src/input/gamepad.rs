@@ -120,6 +120,9 @@ pub struct StickAxisProfile {
     pub invert_y: bool,
     /// Radial (circular) shaping instead of per-axis shaping.
     pub radial: bool,
+    /// Compensate the physical stick's elliptical range so diagonal inputs
+    /// reach a perfect circle (auto-measured per pad, v1.2.5).
+    pub circularity_correction: bool,
 }
 
 impl Default for StickAxisProfile {
@@ -133,6 +136,7 @@ impl Default for StickAxisProfile {
             sensitivity: 1.0,
             invert_y: false,
             radial: true,
+            circularity_correction: false,
         }
     }
 }
@@ -144,6 +148,16 @@ pub enum CurveKind {
     Exponential,
     SCurve,
     Aggressive,
+}
+
+/// Where the built-in gyroscope contributes its motion (v1.2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GyroMode {
+    /// Gyro rates move the OS mouse cursor (aiming).
+    Mouse,
+    /// Gyro rates add a direct offset to the shaped right stick.
+    RightStick,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -178,6 +192,19 @@ pub struct StickProfileConfig {
     pub rumble_intensity: f32,
     /// Extra polling aggressiveness: `true` pins the loop to 1000 Hz+.
     pub turbo_polling: bool,
+    /// Per-source-bit button remap (index = physical PS bit, value = target
+    /// bit, see [`buttons`]). Identity `[0..=15]` by default (v1.2.5).
+    pub button_map: [u8; 16],
+    /// Master switch for the gyro contribution (v1.2.5).
+    pub gyro_enabled: bool,
+    /// Where gyro motion is routed (v1.2.5).
+    pub gyro_mode: GyroMode,
+    /// Gyro gain (`0.1..=8.0`).
+    pub gyro_sensitivity: f32,
+    /// EMA smoothing factor (`0.0..=0.95`, higher = smoother).
+    pub gyro_smoothing: f32,
+    /// Inverts the gyro pitch axis (up/down aim direction).
+    pub gyro_invert: bool,
 }
 
 impl Default for StickProfileConfig {
@@ -193,6 +220,12 @@ impl Default for StickProfileConfig {
             battery_led_mode: false,
             rumble_intensity: 1.0,
             turbo_polling: true,
+            button_map: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            gyro_enabled: false,
+            gyro_mode: GyroMode::Mouse,
+            gyro_sensitivity: 1.0,
+            gyro_smoothing: 0.55,
+            gyro_invert: false,
         }
     }
 }
@@ -253,6 +286,21 @@ pub mod buttons {
     pub const PS: u32 = 1 << 12; // Guide
     pub const TOUCHPAD: u32 = 1 << 13;
     pub const MUTE: u32 = 1 << 14;
+}
+
+/// Remaps a PS button bitmask through the user's per-profile `button_map`.
+/// Index = physical source bit (see [`buttons`]), value = target bit.
+/// `TOUCHPAD`/`MUTE` have no XInput equivalent but can still be mapped onto
+/// any of the 16 bits (the ViGEm submit only emits the XInput subset).
+#[inline(always)]
+pub fn remap_buttons(mask: u32, map: &[u8; 16]) -> u32 {
+    let mut out = 0u32;
+    for (src, &dst) in map.iter().enumerate() {
+        if mask & (1 << src) != 0 {
+            out |= 1 << ((dst & 15) as u32);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +840,8 @@ struct EngineInner {
     led_requests: Mutex<HashMap<String, [u8; 3]>>,
     led_state: RwLock<HashMap<String, [u8; 3]>>,
     rumble_request: Mutex<Option<(f32, f32)>>,
+    /// Set by `recalibrate_gyro`; the poll loop re-captures the rest offset.
+    gyro_calibrate_request: AtomicBool,
     devices: RwLock<Vec<GamepadInfo>>,
     last_snapshot: RwLock<InputSnapshot>,
     last_snapshots: RwLock<HashMap<String, InputSnapshot>>,
@@ -821,6 +871,7 @@ impl PadFlowEngine {
                 led_requests: Mutex::new(HashMap::new()),
                 led_state: RwLock::new(HashMap::new()),
                 rumble_request: Mutex::new(None),
+                gyro_calibrate_request: AtomicBool::new(false),
                 devices: RwLock::new(Vec::new()),
                 last_snapshot: RwLock::new(InputSnapshot::default()),
                 last_snapshots: RwLock::new(HashMap::new()),
@@ -948,6 +999,11 @@ impl PadFlowEngine {
 
     pub fn stop(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
+    }
+
+    /// Forces the gyro rest offset to be re-captured on the next frame.
+    pub fn recalibrate_gyro(&self) {
+        self.inner.gyro_calibrate_request.store(true, Ordering::Relaxed);
     }
 
     /// Spawns the high-priority polling thread. Returns immediately.
@@ -1127,6 +1183,18 @@ struct OpenPad {
     last_touch: Option<[f32; 2]>,
     last_scroll_y: Option<f32>,
     mouse_clicked: bool,
+    /// Per-axis measured reach (elliptical range) used by circularity
+    /// correction; initialised to `1.0` and grown by the running max.
+    circ_max_lx: f32,
+    circ_max_ly: f32,
+    circ_max_rx: f32,
+    circ_max_ry: f32,
+    /// EMA-smoothed gyro rates after rest-subtraction (v1.2.5).
+    gyro_smooth: [f32; 3],
+    /// Auto-captured rest offset — subtracted from raw gyro (v1.2.5).
+    gyro_rest: [f32; 3],
+    /// False until the first still-frame captures the rest offset.
+    gyro_calibrated: bool,
 }
 
 fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<OpenPad>) {
@@ -1189,6 +1257,13 @@ fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<O
             last_touch: None,
             last_scroll_y: None,
             mouse_clicked: false,
+            circ_max_lx: 1.0,
+            circ_max_ly: 1.0,
+            circ_max_rx: 1.0,
+            circ_max_ry: 1.0,
+            gyro_smooth: [0.0; 3],
+            gyro_rest: [0.0; 3],
+            gyro_calibrated: false,
         });
     }
 }
@@ -1295,8 +1370,27 @@ where
                     .copied()
                     .unwrap_or_else(|| *inner.default_profile.read())
             };
-            let (lx, ly) = shape_stick(raw.lx, raw.ly, &prof.left);
-            let (rx, ry) = shape_stick(raw.rx, raw.ry, &prof.right);
+
+            // Circularity correction: normalise the physical ellipse toward a
+            // perfect circle using the per-axis running max (auto-measured).
+            let mut lx_in = raw.lx;
+            let mut ly_in = raw.ly;
+            let mut rx_in = raw.rx;
+            let mut ry_in = raw.ry;
+            if prof.left.circularity_correction {
+                p.circ_max_lx = p.circ_max_lx.max(raw.lx.abs().max(0.02));
+                p.circ_max_ly = p.circ_max_ly.max(raw.ly.abs().max(0.02));
+                lx_in = (raw.lx / p.circ_max_lx).clamp(-1.0, 1.0);
+                ly_in = (raw.ly / p.circ_max_ly).clamp(-1.0, 1.0);
+            }
+            if prof.right.circularity_correction {
+                p.circ_max_rx = p.circ_max_rx.max(raw.rx.abs().max(0.02));
+                p.circ_max_ry = p.circ_max_ry.max(raw.ry.abs().max(0.02));
+                rx_in = (raw.rx / p.circ_max_rx).clamp(-1.0, 1.0);
+                ry_in = (raw.ry / p.circ_max_ry).clamp(-1.0, 1.0);
+            }
+            let (lx, ly) = shape_stick(lx_in, ly_in, &prof.left);
+            let (mut rx, mut ry) = shape_stick(rx_in, ry_in, &prof.right);
             let mut lt = shape_trigger(raw.l2, &prof.trigger_left);
             let mut rt = shape_trigger(raw.r2, &prof.trigger_right);
             let mut buttons_mask = raw.buttons;
@@ -1314,6 +1408,69 @@ where
 
                 buttons_mask = (buttons_mask & !(buttons::L1 | buttons::R1)) | l2_bumper | r2_bumper;
             }
+
+            // ---- gyro: auto rest-calibration, smoothing and routing ---------
+            if prof.gyro_enabled && p.info.has_gyro {
+                if inner.gyro_calibrate_request.swap(false, Ordering::Relaxed) {
+                    p.gyro_calibrated = false;
+                    p.gyro_rest = raw.gyro;
+                }
+                // Auto-recenter: while the pad is still, slowly fold the rest
+                // offset so drift never accumulates.
+                let mag = (raw.gyro[0] * raw.gyro[0]
+                    + raw.gyro[1] * raw.gyro[1]
+                    + raw.gyro[2] * raw.gyro[2])
+                    .sqrt();
+                if !p.gyro_calibrated || mag < 0.02 {
+                    for i in 0..3 {
+                        p.gyro_rest[i] = p.gyro_rest[i] * 0.9 + raw.gyro[i] * 0.1;
+                    }
+                    p.gyro_calibrated = true;
+                }
+                let a = prof.gyro_smoothing.clamp(0.0, 0.95);
+                for i in 0..3 {
+                    let v = raw.gyro[i] - p.gyro_rest[i];
+                    p.gyro_smooth[i] = p.gyro_smooth[i] * a + v * (1.0 - a);
+                }
+                let mut gyro = p.gyro_smooth;
+                // Micro-jitter deadzone on the smoothed rate.
+                let dz = 0.004;
+                for i in 0..3 {
+                    if gyro[i].abs() < dz {
+                        gyro[i] = 0.0;
+                    }
+                }
+                let sens = prof.gyro_sensitivity.clamp(0.1, 8.0);
+                match prof.gyro_mode {
+                    GyroMode::RightStick => {
+                        // Direct tilt→stick mapping: yaw drives X, pitch drives Y.
+                        let ox = gyro[1] * 1.6 * sens;
+                        let mut oy = gyro[0] * 1.6 * sens;
+                        if prof.gyro_invert {
+                            oy = -oy;
+                        }
+                        rx = (rx + ox).clamp(-1.0, 1.0);
+                        ry = (ry + oy).clamp(-1.0, 1.0);
+                    }
+                    GyroMode::Mouse => {
+                        #[cfg(windows)]
+                        {
+                            // pitch → Y, yaw → X (absolute-rate aiming).
+                            let dx = gyro[1] * 220.0 * sens;
+                            let mut dy = gyro[0] * 220.0 * sens;
+                            if prof.gyro_invert {
+                                dy = -dy;
+                            }
+                            if dx.abs() > 0.01 || dy.abs() > 0.01 {
+                                mouse_win::move_cursor(dx as i32, dy as i32);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- user button remapping (final say, after flip-triggers) ----
+            buttons_mask = remap_buttons(buttons_mask, &prof.button_map);
 
             // ---- Touchpad virtual mouse simulation ------------------------
             if prof.touchpad_mouse {

@@ -23,6 +23,17 @@ pub struct AppState {
     pub engine: PadFlowEngine,
 }
 
+/// Reads the persisted `settings.json` (empty object when absent).
+fn read_settings_json(app: &tauri::AppHandle) -> serde_json::Value {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("settings.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -67,6 +78,11 @@ pub fn run() {
             commands::install_hidhide_driver,
             commands::relaunch_app,
             commands::relaunch_as_admin,
+            commands::recalibrate_gyro,
+            commands::get_foreground_app,
+            commands::get_diagnostic_report,
+            commands::save_settings,
+            commands::load_settings,
         ])
         .setup(move |app| {
             // ---- tray -----------------------------------------------------
@@ -179,6 +195,17 @@ pub fn run() {
                 }
             });
 
+            // ---- apply persisted settings (start minimized) ---------------
+            let start_minimized = read_settings_json(app.handle())
+                .get("startMinimized")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if start_minimized {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+
             // ---- auto-start the realtime engine & HidHide whitelist ------
             let boot = app.handle().clone();
             let boot_engine = engine.clone();
@@ -190,10 +217,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the window parks PadFlow in the tray instead of exiting.
+            // Closing the window parks PadFlow in the tray (default) or quits
+            // entirely when the user disabled "minimize to tray" in settings.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+                let minimize_to_tray = read_settings_json(window.app_handle())
+                    .get("minimizeToTray")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if minimize_to_tray {
+                    let _ = window.hide();
+                    api.prevent_close();
+                } else {
+                    let _ = hidhide::uncloak_all_controllers();
+                    let state = window.app_handle().state::<AppState>();
+                    state.engine.stop();
+                }
             }
         })
         .run(tauri::generate_context!())
