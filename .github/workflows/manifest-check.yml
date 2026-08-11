@@ -78,3 +78,39 @@ jobs:
           else
             echo "OK - debug exe stays unelevated"
           fi
+
+  # Deep deterministic fuzzing of the HID parsers and CRC-32. Kept as a
+  # separate job so the manifest checks stay fast; runs the #[ignore]d
+  # deep_fuzz test (500k parser buffers + 200k CRC combos) explicitly.
+  # Debug profile: the release profile sets panic="abort", which would break
+  # the catch_unwind-based crash recording.
+  deep-fuzz:
+    name: Deep fuzz (parsers + CRC-32)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri::generate_context!() embeds ../dist at compile time, so the
+      # frontend must exist before the Rust test build (same as manifest-check).
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run deep fuzz (500k parser buffers + 200k CRC combos)
+        working-directory: src-tauri
+        run: cargo test -- --ignored deep_fuzz_500k_parsers_and_crc

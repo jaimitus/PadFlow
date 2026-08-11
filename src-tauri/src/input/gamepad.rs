@@ -2660,23 +2660,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fuzz_parsers_never_panic_on_random_buffers() {
-        // 8 threads × 6,250 iterations each. The splitmix64 stream is
-        // per-thread and seeded by the worker index, so the run is
-        // deterministic and reproducible. ~50k buffers × 4 parser
-        // invocations (DS4/DualSense × USB/BT) total.
+    /// Shared fuzz harness: runs `parsers` across `threads` workers, each
+    /// doing `iters_per_thread` iterations of random buffers, and asserts
+    /// none of the four parser paths ever panics. Any panic is recorded as
+    /// a packed (thread, iter, parser) value so the failing input is
+    /// reproducible from the seed alone.
+    fn fuzz_parsers(threads: usize, iters_per_thread: usize) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         // Packed failure record: (thread << 12) | (iter << 2) | parser_idx.
         // 0 means no crash; a non-zero value identifies the exact input that
         // panicked so the case can be replayed and minimized.
         let crash = std::sync::Arc::new(AtomicUsize::new(0));
-        let threads: Vec<_> = (0..8)
+        let workers: Vec<_> = (0..threads)
             .map(|t| {
                 let crash = std::sync::Arc::clone(&crash);
                 std::thread::spawn(move || {
                     let mut rng = SplitMix64(0xF00D_5EED_u64.wrapping_add(t as u64));
-                    for i in 0..6250usize {
+                    for i in 0..iters_per_thread {
                         // Lengths sweep 0..=78 (full BT report size) plus a
                         // handful of oversized buffers to exercise the guards.
                         let len = match i % 7 {
@@ -2710,7 +2710,7 @@ mod tests {
                 })
             })
             .collect();
-        for t in threads {
+        for t in workers {
             t.join().expect("fuzz worker must not panic");
         }
         let rec = crash.load(Ordering::SeqCst);
@@ -2721,6 +2721,34 @@ mod tests {
             (rec >> 2) & 0x3FF,
             rec & 0x3
         );
+    }
+
+    #[test]
+    fn fuzz_parsers_never_panic_on_random_buffers() {
+        // 8 threads × 6,250 iterations each. The splitmix64 stream is
+        // per-thread and seeded by the worker index, so the run is
+        // deterministic and reproducible. ~50k buffers × 4 parser
+        // invocations (DS4/DualSense × USB/BT) total.
+        fuzz_parsers(8, 6250);
+    }
+
+    #[test]
+    #[ignore = "deep fuzz — run explicitly in CI (500k iterations) via: cargo test -- --ignored deep_fuzz"]
+    fn deep_fuzz_500k_parsers_and_crc() {
+        // 8 threads × 62,500 = 500k random buffers × 4 parser paths, plus
+        // 200k CRC-32 combos. Gated with #[ignore] so normal `cargo test`
+        // stays fast; the CI job "Deep fuzz" runs it explicitly.
+        fuzz_parsers(8, 62_500);
+        // CRC-32 fuzz: random seed/data lengths, deterministic recompute.
+        let mut rng = SplitMix64(0xD00D_FACE);
+        for _ in 0..200_000usize {
+            let mut seed = vec![0u8; (rng.next() % 5) as usize];
+            let mut data = vec![0u8; (rng.next() % 129) as usize];
+            rand_buf(&mut rng, &mut seed, false);
+            rand_buf(&mut rng, &mut data, false);
+            let crc = crc32(&seed, &data);
+            assert_eq!(crc, crc32(&seed, &data), "CRC not deterministic");
+        }
     }
 
     #[test]
