@@ -809,16 +809,17 @@ fn crc32(seed: &[u8], data: &[u8]) -> u32 {
     !crc
 }
 
-/// Builds and writes the lightbar / rumble output report for the pad.
+/// Builds the lightbar / rumble output report for the pad, ready to write.
 ///
-/// `rumble` is `(weak, strong)` normalised `0.0..=1.0`.
-pub fn write_output_report(
-    device: &HidDevice,
+/// Pure — returns `None` for pads without an addressable lightbar. `rumble`
+/// is `(weak, strong)` normalised `0.0..=1.0`. Bluetooth variants carry a
+/// CRC-32 of the first 74 bytes in the last 4.
+pub fn build_output_report(
     kind: PadKind,
     connection: ConnectionType,
     led: [u8; 3],
     rumble: (f32, f32),
-) -> Result<(), String> {
+) -> Option<Vec<u8>> {
     let weak = (rumble.0.clamp(0.0, 1.0) * 255.0) as u8;
     let strong = (rumble.1.clamp(0.0, 1.0) * 255.0) as u8;
 
@@ -832,7 +833,7 @@ pub fn write_output_report(
             buf[6] = led[0];
             buf[7] = led[1];
             buf[8] = led[2];
-            device.write(&buf).map_err(|e| e.to_string())?;
+            Some(buf.to_vec())
         }
         (PadKind::DualShock4, ConnectionType::Bluetooth) => {
             let mut buf = [0u8; 78];
@@ -847,7 +848,7 @@ pub fn write_output_report(
             buf[10] = led[2];
             let crc = crc32(&[0xA2], &buf[..74]);
             buf[74..78].copy_from_slice(&crc.to_le_bytes());
-            device.write(&buf).map_err(|e| e.to_string())?;
+            Some(buf.to_vec())
         }
         (PadKind::DualSense, ConnectionType::Usb) | (PadKind::DualSenseEdge, ConnectionType::Usb) => {
             let mut buf = [0u8; 48];
@@ -859,7 +860,7 @@ pub fn write_output_report(
             buf[45] = led[0];
             buf[46] = led[1];
             buf[47] = led[2];
-            device.write(&buf).map_err(|e| e.to_string())?;
+            Some(buf.to_vec())
         }
         (PadKind::DualSense, ConnectionType::Bluetooth)
         | (PadKind::DualSenseEdge, ConnectionType::Bluetooth) => {
@@ -875,11 +876,24 @@ pub fn write_output_report(
             buf[48] = led[2];
             let crc = crc32(&[0xA2], &buf[..74]);
             buf[74..78].copy_from_slice(&crc.to_le_bytes());
-            device.write(&buf).map_err(|e| e.to_string())?;
+            Some(buf.to_vec())
         }
-        _ => return Err("This controller has no addressable lightbar".into()),
+        _ => None,
     }
-    Ok(())
+}
+
+/// Writes the lightbar / rumble output report to the device.
+pub fn write_output_report(
+    device: &HidDevice,
+    kind: PadKind,
+    connection: ConnectionType,
+    led: [u8; 3],
+    rumble: (f32, f32),
+) -> Result<(), String> {
+    match build_output_report(kind, connection, led, rumble) {
+        Some(buf) => device.write(&buf).map(|_| ()).map_err(|e| e.to_string()),
+        None => Err("This controller has no addressable lightbar".into()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1819,6 +1833,103 @@ mod tests {
         assert_eq!(crc32(&[], b"123456789"), 0xCBF4_3926);
     }
 
+    // ---------------------------------------------------------------------
+    // Output report builders (lightbar + rumble, CRC-32 over BT) + fuzz
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn output_reports_are_well_formed() {
+        let led = [0x12, 0x34, 0x56];
+        let rumble = (0.5, 0.25);
+        let cases = [
+            (PadKind::DualShock4, ConnectionType::Usb, 32usize, 0x05u8),
+            (PadKind::DualShock4, ConnectionType::Bluetooth, 78, 0x11),
+            (PadKind::DualSense, ConnectionType::Usb, 48, 0x02),
+            (PadKind::DualSense, ConnectionType::Bluetooth, 78, 0x31),
+            (PadKind::DualSenseEdge, ConnectionType::Usb, 48, 0x02),
+            (PadKind::DualSenseEdge, ConnectionType::Bluetooth, 78, 0x31),
+        ];
+        for (kind, conn, len, id) in cases {
+            let buf = build_output_report(kind, conn, led, rumble).expect("report must build");
+            assert_eq!(buf.len(), len, "{kind:?}/{conn:?} length");
+            assert_eq!(buf[0], id, "{kind:?}/{conn:?} report id");
+            // Rumble bytes for (0.5, 0.25): 127.5 -> 127, 63.75 -> 63
+            // (`as u8` truncates — matching production behaviour).
+            match (kind, conn) {
+                (PadKind::DualShock4, ConnectionType::Usb) => {
+                    assert_eq!((buf[4], buf[5]), (127, 63));
+                    assert_eq!(&buf[6..9], &led);
+                }
+                (PadKind::DualShock4, ConnectionType::Bluetooth) => {
+                    assert_eq!((buf[6], buf[7]), (127, 63));
+                    assert_eq!(&buf[8..11], &led);
+                    // CRC-32 of the first 74 bytes lands in the last 4.
+                    let crc = crc32(&[0xA2], &buf[..74]);
+                    assert_eq!(
+                        &buf[74..78],
+                        &crc.to_le_bytes(),
+                        "{kind:?}/{conn:?} CRC mismatch"
+                    );
+                }
+                (PadKind::DualSense, ConnectionType::Usb)
+                | (PadKind::DualSenseEdge, ConnectionType::Usb) => {
+                    assert_eq!((buf[3], buf[4]), (127, 63));
+                    assert_eq!(&buf[45..48], &led);
+                }
+                _ => {
+                    assert_eq!((buf[4], buf[5]), (127, 63));
+                    assert_eq!(&buf[46..49], &led);
+                    let crc = crc32(&[0xA2], &buf[..74]);
+                    assert_eq!(&buf[74..78], &crc.to_le_bytes());
+                }
+            }
+        }
+        // Rumble values clamp into 0..=1 before scaling.
+        let buf = build_output_report(
+            PadKind::DualSense,
+            ConnectionType::Usb,
+            [0, 0, 0],
+            (-3.0, 2.0),
+        )
+        .unwrap();
+        assert_eq!((buf[3], buf[4]), (0, 255));
+        // Pads without a lightbar produce no report.
+        assert!(build_output_report(PadKind::XInput, ConnectionType::Usb, led, rumble).is_none());
+        assert!(build_output_report(PadKind::Generic, ConnectionType::Bluetooth, led, rumble).is_none());
+    }
+
+    #[test]
+    fn fuzz_crc32_never_panics_on_random_bytes() {
+        // crc32 chains `seed` then `data` — any lengths, including empty,
+        // must produce a u32 without panicking. The result is a pure
+        // function of the bytes, so the same inputs always give the same CRC.
+        let mut rng = SplitMix64(0xC0DE_BA5E);
+        for i in 0..10_000usize {
+            let seed_len = (rng.next() % 5) as usize;
+            let data_len = (rng.next() % 129) as usize; // 0..=128
+            let mut seed = vec![0u8; seed_len];
+            let mut data = vec![0u8; data_len];
+            rand_buf(&mut rng, &mut seed, false);
+            rand_buf(&mut rng, &mut data, false);
+            let crc = crc32(&seed, &data);
+            // Determinism: recomputing over the same bytes is identical.
+            assert_eq!(crc, crc32(&seed, &data), "CRC not deterministic at {i}");
+        }
+        // Edge: both empty.
+        assert_eq!(crc32(&[], &[]), crc32(&[], &[]));
+        // Concatenation equivalence: crc(seed, data) == crc([], seed+data).
+        let mut rng = SplitMix64(0x1234);
+        for _ in 0..500usize {
+            let mut seed = vec![0u8; (rng.next() % 16) as usize];
+            let mut data = vec![0u8; (rng.next() % 32) as usize];
+            rand_buf(&mut rng, &mut seed, false);
+            rand_buf(&mut rng, &mut data, false);
+            let mut joined = seed.clone();
+            joined.extend_from_slice(&data);
+            assert_eq!(crc32(&seed, &data), crc32(&[], &joined));
+        }
+    }
+
     // -----------------------------------------------------------------------
     // v1.2.5 button remapping (regression)
     // -----------------------------------------------------------------------
@@ -2559,10 +2670,10 @@ mod tests {
         // Packed failure record: (thread << 12) | (iter << 2) | parser_idx.
         // 0 means no crash; a non-zero value identifies the exact input that
         // panicked so the case can be replayed and minimized.
-        let crash = AtomicUsize::new(0);
+        let crash = std::sync::Arc::new(AtomicUsize::new(0));
         let threads: Vec<_> = (0..8)
             .map(|t| {
-                let crash = &crash;
+                let crash = std::sync::Arc::clone(&crash);
                 std::thread::spawn(move || {
                     let mut rng = SplitMix64(0xF00D_5EED_u64.wrapping_add(t as u64));
                     for i in 0..6250usize {
