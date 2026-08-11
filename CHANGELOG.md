@@ -37,6 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **🛡️ CLOAK ALL truly fixed — correct HidHide IOCTL contract:**
   - The root cause of *"No PlayStation controllers to cloak"* was finally found: PadFlow used `FILE_DEVICE_UNKNOWN` as the IOCTL device type, but the HidHide driver expects its **custom device type 32769**. Every IOCTL was rejected with `ERROR_INVALID_PARAMETER (87)` — cloaking never reached the driver.
   - v1.2.2 mirrors the official `HidHideIoctlContract.h` from the Nefarius driver (device type `0x8001`, `METHOD_BUFFERED`, `FILE_READ_DATA`), so blacklist/whitelist/active writes now reach the driver and **cloaking works — even without Administrator rights** (the driver persists to the registry in kernel mode).
+- **🧪 IOCTL contract regression test:** a unit test now guards the corrected HidHide IOCTL contract (device type `0x8001`) so the error-87 bug can never silently come back.
+- **🗯️ Cleaner active-state errors:** HidHide active-state IOCTL errors are combined into a single clear message and stale admin hints removed.
 
 ## [1.2.1] - 2026-08-09
 
@@ -47,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   - New **elevation banner** with a **"RESTART AS ADMINISTRATOR"** button — one click relaunches PadFlow with UAC, and cloaking works instantly.
   - HidHide read/write errors are now propagated end-to-end (registry + IOCTL), so toasts tell you exactly what failed and why.
   - CLOAK ALL now reports *what* was found: detected controller names, PS pads, and per-device errors.
+- **⚙️ Elevate-and-exit single-instance race fixed:** relaunching as Administrator no longer races with the single-instance lock — no ghost instances left behind after the UAC relaunch.
+- **⚡ UNCLOAK ALL short-circuit:** uncloaking now short-circuits when nothing is hidden, skipping pointless HidHide writes.
 
 ## [1.2.0] - 2026-08-09
 
@@ -59,6 +63,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   - **Tray integration:** cloak / uncloak all controllers straight from the system-tray icon, no need to open the window.
   - "CLOAK ALL" now only hides **PlayStation** pads — never touches Xbox controllers.
 - **⚡ Live shield status:** the app now auto-refreshes HidHide state every 3 s, so edits made in the official HidHideClient GUI are reflected instantly.
+
+### Changed
+
+- **⚙️ Hardened update checker:** the background update check now fires exactly once shortly after launch (single-shot + re-entry guard), and when an update can't be installed in-app it falls back to a web-mode CTA opening the release page.
 
 ## [1.1.1] - 2026-08-09
 
@@ -76,6 +84,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Added
 
+- **🎮 Multi-Controller Support — up to 4 gamepads at once:**
+  - Connect and emulate up to **4 simultaneous gamepads**, each mapped to its own virtual Xbox 360 controller slot.
+  - The realtime engine, gamepad cards and live telemetry manage every pad independently.
 - **🛡️ Enhanced HidHide Cloak Firewall:**
   - Direct low-level IOCTL communication (`\\.\HidHide`) and synchronized registry integration with the official Nefarius HidHide driver.
   - 1-Click global cloak toggle with real-time hidden instance count reporting.
@@ -96,3 +107,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Added
 
 - 🎉 **Initial public release** of PadFlow — native, ultra-lightweight gamepad calibration studio and virtual Xbox 360 controller emulator (ViGEmBus bridge) for Windows 10 / 11.
+  - **🎮 Virtual Xbox 360 controller bridge** via ViGEmBus with a sub-millisecond realtime HID engine polling at up to 1 kHz.
+  - **🎮 Direct HID parsing** for DualShock 4, DualSense and DualSense Edge (USB + Bluetooth).
+  - **📈 Interactive stick response curve tuner** (Linear / Exponential / S-Curve / Aggressive) with a live 60 FPS canvas.
+  - **🎯 Inner / outer / anti-deadzone calibration** per stick.
+  - **💾 Custom profile manager** with save / load / export.
+  - **📊 Live telemetry** — battery level, connection type, latency and polling rate.
