@@ -2732,6 +2732,141 @@ mod tests {
         fuzz_parsers(8, 6250);
     }
 
+    /// Fuzzes the full processing hot loop over randomly parsed reports:
+    /// shape_stick / shape_trigger → remap_buttons → circularity_correct →
+    /// gyro rest-calibration / smoothing / deadzone / routing. Runs each
+    /// parsed buffer through the whole pipeline and asserts every output
+    /// stays finite and physically valid — and, crucially, that nothing
+    /// panics on any combination of random profile fields and random axes.
+    fn fuzz_hot_loop(threads: usize, iters_per_thread: usize) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let crash = std::sync::Arc::new(AtomicUsize::new(0));
+        let workers: Vec<_> = (0..threads)
+            .map(|t| {
+                let crash = std::sync::Arc::clone(&crash);
+                std::thread::spawn(move || {
+                    let mut rng = SplitMix64(0xB0B_1EED_u64.wrapping_add(t as u64));
+                    // Per-pad state carried across frames, like the real engine.
+                    let mut circ_x = CIRCULARITY_SEED;
+                    let mut circ_y = CIRCULARITY_SEED;
+                    let mut gyro_rest = [0.0f32; 3];
+                    let mut gyro_cal = false;
+                    let mut gyro_sm = [0.0f32; 3];
+                    for i in 0..iters_per_thread {
+                        // Randomised-but-valid profile.
+                        let curve = match rng.next() % 4 {
+                            0 => CurveKind::Linear,
+                            1 => CurveKind::Exponential,
+                            2 => CurveKind::SCurve,
+                            _ => CurveKind::Aggressive,
+                        };
+                        let mut prof = StickProfileConfig::default();
+                        prof.left.curve = curve;
+                        prof.left.curve_power = (rng.next() % 40) as f32 / 10.0; // 0.0..=3.9
+                        prof.left.sensitivity = (rng.next() % 80) as f32 / 10.0; // 0.0..=7.9
+                        prof.left.inner_deadzone = (rng.next() % 30) as f32 / 100.0;
+                        prof.left.outer_deadzone = 0.9 + (rng.next() % 10) as f32 / 100.0;
+                        prof.left.anti_deadzone = (rng.next() % 20) as f32 / 100.0;
+                        prof.left.radial = rng.next() % 2 == 0;
+                        prof.left.invert_y = rng.next() % 2 == 0;
+                        prof.left.circularity_correction = rng.next() % 2 == 0;
+                        prof.right = prof.left; // same random tuning both sticks
+                        prof.trigger_left.hair_trigger = rng.next() % 2 == 0;
+                        prof.trigger_right = prof.trigger_left;
+                        prof.flip_triggers = rng.next() % 2 == 0;
+                        prof.button_map = StickProfileConfig::default().button_map;
+                        if rng.next() % 3 == 0 {
+                            prof.button_map[0] = 1; // cross -> circle
+                            prof.button_map[1] = 0; // circle -> cross
+                        }
+                        let gyro_sens = (rng.next() % 90) as f32 / 10.0 + 0.1; // 0.1..=9.0
+                        let gyro_invert = rng.next() % 2 == 0;
+                        let smooth = (rng.next() % 100) as f32 / 100.0; // 0.0..=0.99
+                        let mut len = (rng.next() % 79) as usize;
+                        if i % 11 == 0 {
+                            len = 64 + (rng.next() % 15) as usize;
+                        }
+                        let mut buf = vec![0u8; len];
+                        rand_buf(&mut rng, &mut buf, i % 2 == 0);
+                        let parsers = [
+                            (parse_ds4 as fn(&[u8], bool) -> Option<RawState>, false),
+                            (parse_ds4 as fn(&[u8], bool) -> Option<RawState>, true),
+                            (parse_dualsense as fn(&[u8], bool) -> Option<RawState>, false),
+                            (parse_dualsense as fn(&[u8], bool) -> Option<RawState>, true),
+                        ];
+                        for (j, (parse, bt)) in parsers.iter().enumerate() {
+                            let s = match parse(&buf, *bt) {
+                                Some(s) => s,
+                                None => continue,
+                            };
+                            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                // --- stick / trigger shaping ---
+                                let (lx, ly) = shape_stick(s.lx, s.ly, &prof.left);
+                                let (rx, ry) = shape_stick(s.rx, s.ry, &prof.right);
+                                let (tl, tr) = if prof.flip_triggers {
+                                    (s.r2, s.l2)
+                                } else {
+                                    (s.l2, s.r2)
+                                };
+                                let tl = shape_trigger(tl, &prof.trigger_left);
+                                let tr = shape_trigger(tr, &prof.trigger_right);
+                                // --- button remapping ---
+                                let remapped = remap_buttons(s.buttons, &prof.button_map);
+                                // --- circularity correction (persistent state) ---
+                                let (cx, cy) =
+                                    circularity_correct(lx, ly, &mut circ_x, &mut circ_y);
+                                // --- gyro pipeline ---
+                                let (rest, cal) =
+                                    gyro_update_rest(s.gyro, gyro_rest, gyro_cal, false);
+                                gyro_rest = rest;
+                                gyro_cal = cal;
+                                let g = gyro_smooth(s.gyro, gyro_rest, gyro_sm, smooth);
+                                gyro_sm = g;
+                                let g = gyro_deadzone(g, 0.004);
+                                let (ox, oy) = gyro_stick_offset(g, gyro_sens, gyro_invert);
+                                let (dx, dy) = gyro_mouse_delta(g, gyro_sens, gyro_invert);
+                                // --- invariants ---
+                                // Shaped sticks / triggers / circularity output are
+                                // all normalised by contract and stay in [-1, 1].
+                                for &v in &[lx, ly, rx, ry, tl, tr, cx, cy] {
+                                    assert!(v.is_finite() && (-1.0..=1.0).contains(&v), "axis {v}");
+                                }
+                                // Gyro offsets are PRE-clamp (the engine applies
+                                // (rx + ox).clamp(-1, 1) afterwards) — they only
+                                // need to be finite. Mouse deltas are pixels.
+                                for &v in &[ox, oy, dx, dy] {
+                                    assert!(v.is_finite(), "gyro output {v}");
+                                }
+                                // Engine clamp reproduces the real hot loop.
+                                let fx = (rx + ox).clamp(-1.0, 1.0);
+                                let fy = (ry + oy).clamp(-1.0, 1.0);
+                                assert!(fx.is_finite() && (-1.0..=1.0).contains(&fx));
+                                assert!(fy.is_finite() && (-1.0..=1.0).contains(&fy));
+                                let _ = remapped; // 16-bit masked by construction
+                            }))
+                            .is_err()
+                            {
+                                let rec = (t << 12) | (i << 2) | j;
+                                crash.compare_exchange(0, rec, Ordering::SeqCst, Ordering::SeqCst).ok();
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in workers {
+            t.join().expect("hot-loop fuzz worker must not panic");
+        }
+        let rec = crash.load(Ordering::SeqCst);
+        assert_eq!(
+            rec, 0,
+            "hot loop panicked on deterministic fuzz input: thread={} iter={} parser={} seed=0xB0B_1EED+thread",
+            rec >> 12,
+            (rec >> 2) & 0x3FF,
+            rec & 0x3
+        );
+    }
+
     #[test]
     #[ignore = "deep fuzz — run explicitly in CI (500k iterations) via: cargo test -- --ignored deep_fuzz"]
     fn deep_fuzz_500k_parsers_and_crc() {
@@ -2749,6 +2884,9 @@ mod tests {
             let crc = crc32(&seed, &data);
             assert_eq!(crc, crc32(&seed, &data), "CRC not deterministic");
         }
+        // Hot-loop pipeline fuzz: 8 threads × 25,000 = 200k reports through
+        // shape → remap → circularity → gyro with per-pad persistent state.
+        fuzz_hot_loop(8, 25_000);
     }
 
     #[test]
