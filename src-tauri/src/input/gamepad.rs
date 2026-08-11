@@ -303,6 +303,46 @@ pub fn remap_buttons(mask: u32, map: &[u8; 16]) -> u32 {
     out
 }
 
+/// Seed for the per-axis reach trackers used by [`circularity_correct`]. While
+/// a tracker sits at the seed, no reach has been measured yet and the axis
+/// passes through **uncorrected** (so small inputs are never amplified). A
+/// seed of `1.0` would make the correction a permanent no-op for the
+/// normalised `[-1, 1]` input range, because the reach could never grow past
+/// it.
+pub const CIRCULARITY_SEED: f32 = 0.02;
+
+/// Deflections below this magnitude are treated as fine-aim and never teach
+/// the per-axis reach — only substantial (near-rim) movements calibrate it.
+/// This hysteresis prevents a small push from reading as a full deflection
+/// while the stick's reach is still being measured.
+pub const CIRCULARITY_LEARN_THRESHOLD: f32 = 0.5;
+
+/// Circularity correction: normalises a physical stick's elliptical range
+/// toward a perfect circle by dividing each axis by its auto-measured reach.
+/// The reach is learned monotonically from strong deflections only, so fine
+/// aiming is never distorted and small inputs never amplify the output.
+#[inline(always)]
+pub fn circularity_correct(x: f32, y: f32, max_x: &mut f32, max_y: &mut f32) -> (f32, f32) {
+    if x.abs() >= CIRCULARITY_LEARN_THRESHOLD {
+        *max_x = (*max_x).max(x.abs());
+    }
+    if y.abs() >= CIRCULARITY_LEARN_THRESHOLD {
+        *max_y = (*max_y).max(y.abs());
+    }
+    // Until a reach has been measured, the axis passes through untouched.
+    let x_out = if *max_x > CIRCULARITY_SEED {
+        (x / *max_x).clamp(-1.0, 1.0)
+    } else {
+        x
+    };
+    let y_out = if *max_y > CIRCULARITY_SEED {
+        (y / *max_y).clamp(-1.0, 1.0)
+    } else {
+        y
+    };
+    (x_out, y_out)
+}
+
 // ---------------------------------------------------------------------------
 // Response-curve mathematics
 // ---------------------------------------------------------------------------
@@ -1257,10 +1297,13 @@ fn open_all_pads(api: &mut HidApi, inner: &EngineInner, current_pads: &mut Vec<O
             last_touch: None,
             last_scroll_y: None,
             mouse_clicked: false,
-            circ_max_lx: 1.0,
-            circ_max_ly: 1.0,
-            circ_max_rx: 1.0,
-            circ_max_ry: 1.0,
+            // Seed at CIRCULARITY_SEED so the reach is actually learned (a
+            // 1.0 seed would make the correction a no-op for the normalised
+            // [-1, 1] input range) while sub-threshold inputs pass through raw.
+            circ_max_lx: CIRCULARITY_SEED,
+            circ_max_ly: CIRCULARITY_SEED,
+            circ_max_rx: CIRCULARITY_SEED,
+            circ_max_ry: CIRCULARITY_SEED,
             gyro_smooth: [0.0; 3],
             gyro_rest: [0.0; 3],
             gyro_calibrated: false,
@@ -1378,16 +1421,20 @@ where
             let mut rx_in = raw.rx;
             let mut ry_in = raw.ry;
             if prof.left.circularity_correction {
-                p.circ_max_lx = p.circ_max_lx.max(raw.lx.abs().max(0.02));
-                p.circ_max_ly = p.circ_max_ly.max(raw.ly.abs().max(0.02));
-                lx_in = (raw.lx / p.circ_max_lx).clamp(-1.0, 1.0);
-                ly_in = (raw.ly / p.circ_max_ly).clamp(-1.0, 1.0);
+                (lx_in, ly_in) = circularity_correct(
+                    raw.lx,
+                    raw.ly,
+                    &mut p.circ_max_lx,
+                    &mut p.circ_max_ly,
+                );
             }
             if prof.right.circularity_correction {
-                p.circ_max_rx = p.circ_max_rx.max(raw.rx.abs().max(0.02));
-                p.circ_max_ry = p.circ_max_ry.max(raw.ry.abs().max(0.02));
-                rx_in = (raw.rx / p.circ_max_rx).clamp(-1.0, 1.0);
-                ry_in = (raw.ry / p.circ_max_ry).clamp(-1.0, 1.0);
+                (rx_in, ry_in) = circularity_correct(
+                    raw.rx,
+                    raw.ry,
+                    &mut p.circ_max_rx,
+                    &mut p.circ_max_ry,
+                );
             }
             let (lx, ly) = shape_stick(lx_in, ly_in, &prof.left);
             let (mut rx, mut ry) = shape_stick(rx_in, ry_in, &prof.right);
@@ -1699,5 +1746,169 @@ mod tests {
     #[test]
     fn crc_matches_known_vector() {
         assert_eq!(crc32(&[], b"123456789"), 0xCBF4_3926);
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.2.5 button remapping (regression)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn remap_identity_preserves_mask() {
+        let map = StickProfileConfig::default().button_map;
+        let mask = buttons::CROSS | buttons::TRIANGLE | buttons::L1 | buttons::PS;
+        assert_eq!(remap_buttons(mask, &map), mask);
+    }
+
+    #[test]
+    fn remap_swaps_cross_and_circle() {
+        // Classic JP-style layout swap: ✕→○ and ○→✕.
+        let mut map = StickProfileConfig::default().button_map;
+        map[0] = 1;
+        map[1] = 0;
+        assert_eq!(remap_buttons(buttons::CROSS, &map), buttons::CIRCLE);
+        assert_eq!(remap_buttons(buttons::CIRCLE, &map), buttons::CROSS);
+        // Pressing both still yields both (no spurious bits).
+        assert_eq!(
+            remap_buttons(buttons::CROSS | buttons::CIRCLE, &map),
+            buttons::CROSS | buttons::CIRCLE
+        );
+    }
+
+    #[test]
+    fn remap_preserves_unmapped_buttons() {
+        let mut map = StickProfileConfig::default().button_map;
+        map[0] = 1; // only CROSS is remapped
+        let out = remap_buttons(buttons::CROSS | buttons::R1 | buttons::L3, &map);
+        assert_eq!(out, buttons::CIRCLE | buttons::R1 | buttons::L3);
+    }
+
+    #[test]
+    fn remap_non_xinput_source_onto_a() {
+        // TOUCHPAD has no XInput equivalent but can drive A (CROSS).
+        let mut map = StickProfileConfig::default().button_map;
+        map[13] = 0;
+        assert_eq!(remap_buttons(buttons::TOUCHPAD, &map), buttons::CROSS);
+        // The original TOUCHPAD bit must be gone from the output.
+        assert_eq!(remap_buttons(buttons::TOUCHPAD, &map) & buttons::TOUCHPAD, 0);
+    }
+
+    #[test]
+    fn remap_masks_target_bit_into_16() {
+        let mut map = StickProfileConfig::default().button_map;
+        map[0] = 16; // out-of-range target wraps to bit 0
+        assert_eq!(remap_buttons(buttons::CROSS, &map), buttons::CROSS);
+        map[0] = 31; // 31 & 15 = 15
+        assert_eq!(remap_buttons(buttons::CROSS, &map), 1 << 15);
+    }
+
+    #[test]
+    fn remap_multiple_sources_can_share_a_target() {
+        // Both bumpers fire A.
+        let mut map = StickProfileConfig::default().button_map;
+        map[4] = 0;
+        map[5] = 0;
+        assert_eq!(
+            remap_buttons(buttons::L1 | buttons::R1, &map),
+            buttons::CROSS
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.2.5 circularity correction (regression)
+    // -----------------------------------------------------------------------
+
+    /// Seed a fresh per-axis reach tracker the way the engine does.
+    fn fresh_reach() -> (f32, f32) {
+        (CIRCULARITY_SEED, CIRCULARITY_SEED)
+    }
+
+    #[test]
+    fn circularity_learns_per_axis_reach() {
+        let (mut mx, mut my) = fresh_reach();
+        // A full-X / 70%-Y deflection teaches the ellipse on frame one.
+        let (x, y) = circularity_correct(1.0, 0.7, &mut mx, &mut my);
+        assert!((mx - 1.0).abs() < 1e-4 && (my - 0.7).abs() < 1e-4);
+        assert!((x - 1.0).abs() < 1e-4 && (y - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn circularity_after_learning_maps_partial_pushes_proportionally() {
+        // Once the ellipse (1.0, 0.7) is known, a half push is half output on
+        // BOTH axes — the diagonal ratio is preserved (this is what makes a
+        // physical ellipse read as a circle).
+        let mut mx = 1.0f32;
+        let mut my = 0.7f32;
+        let (x, y) = circularity_correct(0.5, 0.35, &mut mx, &mut my);
+        assert!((x - 0.5).abs() < 1e-4 && (y - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn circularity_diagonal_sits_on_unit_circle() {
+        // Physical 45° push on the (1.0, 0.7) ellipse → (0.7071, 0.7071):
+        // magnitude exactly 1.0 instead of the raw 0.86.
+        let mut mx = 1.0f32;
+        let mut my = 0.7f32;
+        let c = 0.707_106_78f32;
+        let (x, y) = circularity_correct(c, 0.7 * c, &mut mx, &mut my);
+        assert!((x - c).abs() < 1e-4 && (y - c).abs() < 1e-4);
+        let mag = (x * x + y * y).sqrt();
+        assert!((mag - 1.0).abs() < 1e-4, "diagonal must reach the unit circle");
+    }
+
+    #[test]
+    fn circularity_reach_is_monotonic() {
+        let (mut mx, mut my) = fresh_reach();
+        let _ = circularity_correct(0.8, 0.9, &mut mx, &mut my);
+        let (mx0, my0) = (mx, my);
+        // Smaller inputs never shrink the learned reach.
+        let _ = circularity_correct(0.3, 0.4, &mut mx, &mut my);
+        assert_eq!((mx, my), (mx0, my0));
+        // Bigger inputs grow it.
+        let (x, y) = circularity_correct(1.0, 1.0, &mut mx, &mut my);
+        assert!((x - 1.0).abs() < 1e-4 && (y - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn circularity_preserves_negative_direction() {
+        let (mut mx, mut my) = fresh_reach();
+        let (x, y) = circularity_correct(-1.0, -0.7, &mut mx, &mut my);
+        assert!(x < 0.0 && y < 0.0);
+        assert!((x + 1.0).abs() < 1e-4 && (y + 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn circularity_never_amplifies_fine_aim_input() {
+        // Sub-threshold deflections never teach the reach and never amplify:
+        // a 1% push stays a 1% output, even on a fresh session.
+        let (mut mx, mut my) = fresh_reach();
+        let (x, y) = circularity_correct(0.01, 0.01, &mut mx, &mut my);
+        assert!((x - 0.01).abs() < 1e-4 && (y - 0.01).abs() < 1e-4);
+        // And the noise was never recorded as reach.
+        assert_eq!((mx, my), fresh_reach());
+    }
+
+    #[test]
+    fn circularity_learns_from_strong_samples_only() {
+        let (mut mx, mut my) = fresh_reach();
+        // Fine-aim deflection below the threshold is ignored…
+        let _ = circularity_correct(0.3, 0.2, &mut mx, &mut my);
+        assert_eq!((mx, my), fresh_reach());
+        // …but a strong deflection teaches the per-axis reach.
+        let (x, y) = circularity_correct(0.8, 0.6, &mut mx, &mut my);
+        assert!((mx - 0.8).abs() < 1e-4 && (my - 0.6).abs() < 1e-4);
+        assert!((x - 1.0).abs() < 1e-4 && (y - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn circularity_output_is_clamped() {
+        // Even a pathological over-range sample can never leave [-1, 1].
+        let mut mx = 1.0f32;
+        let mut my = 1.0f32;
+        for i in 0..=200 {
+            let a = i as f32 / 100.0; // 0..=2 rad, sweeps the full rim
+            let (x, y) = circularity_correct(a.cos(), a.sin(), &mut mx, &mut my);
+            assert!(x >= -1.0 && x <= 1.0, "x out of range: {x}");
+            assert!(y >= -1.0 && y <= 1.0, "y out of range: {y}");
+        }
     }
 }
