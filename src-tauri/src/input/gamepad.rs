@@ -751,7 +751,9 @@ fn parse_dualsense(buf: &[u8], bt: bool) -> Option<RawState> {
     }
     s.buttons = m;
 
-    if buf.len() >= o + 26 {
+    // The last le_i16 reads indices `o + 25` and `o + 26`, so a buffer of
+    // exactly `o + 26` bytes would panic — the floor must be `o + 27`.
+    if buf.len() >= o + 27 {
         s.gyro = [
             le_i16(buf, o + 15) as f32 / 1024.0,
             le_i16(buf, o + 17) as f32 / 1024.0,
@@ -2492,5 +2494,164 @@ mod tests {
         assert_eq!(s.battery, -1);
         assert_eq!(s.gyro, [0.0, 0.0, 0.0]);
         assert_eq!(s.touch_count, 0);
+    }
+
+    #[test]
+    fn parse_dualsense_motion_floor_is_exact() {
+        // Regression for an off-by-one the fuzzer caught: the motion block
+        // reads le_i16 at o+25 (indices o+25..=o+26), so a report of exactly
+        // the old guard length (o+26 bytes) used to panic. Both boundary
+        // lengths must now parse cleanly with motion zeroed.
+        let s = parse_dualsense(&[0u8; 26], false).expect("26-byte USB report must parse");
+        assert_eq!(s.gyro, [0.0, 0.0, 0.0]);
+        assert!(parse_dualsense(&[0u8; 27], true).is_some());
+        // One byte longer, the motion block parses cleanly (values stay 0).
+        let mut buf = [0u8; 27];
+        buf[0] = 0x01;
+        let s = parse_dualsense(&buf, false).expect("27-byte USB report must parse");
+        assert_eq!(s.gyro, [0.0, 0.0, 0.0]);
+        assert_eq!(s.accel, [0.0, 0.0, 0.0]);
+    }
+
+    // ---------------------------------------------------------------------
+    // Deterministic fuzzing — splitmix64 PRNG (no external deps). Same seed
+    // always produces the same buffer stream, so any regression is
+    // reproducible by just re-running the test.
+    // ---------------------------------------------------------------------
+
+    struct SplitMix64(u64);
+
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// Fills `buf` with deterministic pseudo-random bytes. When `report_id`
+    /// is set, byte 0 is a plausible input-report id (USB 0x01, BT 0x11/0x31)
+    /// so parsers get a chance to run their full happy path; otherwise the
+    /// whole buffer is garbage.
+    fn rand_buf(rng: &mut SplitMix64, buf: &mut [u8], report_id: bool) {
+        for b in buf.iter_mut() {
+            *b = (rng.next() & 0xFF) as u8;
+        }
+        if report_id && !buf.is_empty() {
+            let kind = rng.next() % 3;
+            buf[0] = match kind {
+                0 => 0x01, // USB id, shared by both pads
+                1 => 0x11, // DS4 BT
+                _ => 0x31, // DualSense BT
+            };
+        }
+    }
+
+    #[test]
+    fn fuzz_parsers_never_panic_on_random_buffers() {
+        // 8 threads × 6,250 iterations each. The splitmix64 stream is
+        // per-thread and seeded by the worker index, so the run is
+        // deterministic and reproducible. ~50k buffers × 4 parser
+        // invocations (DS4/DualSense × USB/BT) total.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Packed failure record: (thread << 12) | (iter << 2) | parser_idx.
+        // 0 means no crash; a non-zero value identifies the exact input that
+        // panicked so the case can be replayed and minimized.
+        let crash = AtomicUsize::new(0);
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let crash = &crash;
+                std::thread::spawn(move || {
+                    let mut rng = SplitMix64(0xF00D_5EED_u64.wrapping_add(t as u64));
+                    for i in 0..6250usize {
+                        // Lengths sweep 0..=78 (full BT report size) plus a
+                        // handful of oversized buffers to exercise the guards.
+                        let len = match i % 7 {
+                            0..=4 => (rng.next() % 79) as usize,
+                            5 => 64,
+                            _ => 96,
+                        };
+                        let mut buf = vec![0u8; len];
+                        // Half the iterations set a plausible report id.
+                        rand_buf(&mut rng, &mut buf, i % 2 == 0);
+                        let parsers = [
+                            (parse_ds4 as fn(&[u8], bool) -> Option<RawState>, false),
+                            (parse_ds4 as fn(&[u8], bool) -> Option<RawState>, true),
+                            (parse_dualsense as fn(&[u8], bool) -> Option<RawState>, false),
+                            (parse_dualsense as fn(&[u8], bool) -> Option<RawState>, true),
+                        ];
+                        for (j, (parse, bt)) in parsers.iter().enumerate() {
+                            if std::panic::catch_unwind(|| parse(&buf, *bt)).is_err() {
+                                // Record the first crash only.
+                                let rec = (t << 12) | (i << 2) | j;
+                                crash.compare_exchange(
+                                    0,
+                                    rec,
+                                    Ordering::SeqCst,
+                                    Ordering::SeqCst,
+                                )
+                                .ok();
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("fuzz worker must not panic");
+        }
+        let rec = crash.load(Ordering::SeqCst);
+        assert_eq!(
+            rec, 0,
+            "parser panicked on deterministic fuzz input: thread={} iter={} parser={} (0=DS4-USB, 1=DS4-BT, 2=DualSense-USB, 3=DualSense-BT) seed=0xF00D_5EED+thread",
+            rec >> 12,
+            (rec >> 2) & 0x3FF,
+            rec & 0x3
+        );
+    }
+
+    #[test]
+    fn fuzz_parsers_keep_outputs_in_valid_ranges() {
+        // Property check: even with adversarial bytes, every field the
+        // parsers expose must land in a physically valid range. Any
+        // out-of-range value here means the parser mis-read an offset.
+        let mut rng = SplitMix64(0xC0FF_EE);
+        for i in 0..20_000usize {
+            let mut buf = vec![0u8; 78]; // full-size, valid for both pads
+            rand_buf(&mut rng, &mut buf, i % 2 == 0);
+            for (parse, bt) in [
+                (parse_ds4 as fn(&[u8], bool) -> Option<RawState>, false),
+                (parse_ds4 as fn(&[u8], bool) -> Option<RawState>, true),
+                (parse_dualsense as fn(&[u8], bool) -> Option<RawState>, false),
+                (parse_dualsense as fn(&[u8], bool) -> Option<RawState>, true),
+            ] {
+                if let Some(s) = parse(&buf, bt) {
+                    assert!(
+                        s.battery >= -1 && s.battery <= 100,
+                        "battery {}",
+                        s.battery
+                    );
+                    for &g in &s.gyro {
+                        assert!(g.is_finite() && g.abs() <= 32.0, "gyro {g}");
+                    }
+                    for &a in &s.accel {
+                        assert!(a.is_finite() && a.abs() <= 32.0, "accel {a}");
+                    }
+                    for &v in &[s.lx, s.ly, s.rx, s.ry, s.l2, s.r2] {
+                        assert!(
+                            v.is_finite() && (-1.0..=1.0).contains(&v),
+                            "axis {v}"
+                        );
+                    }
+                    assert!(s.touch_count <= 2, "touch_count {}", s.touch_count);
+                    for t in &s.touch {
+                        assert!(t[0].is_finite() && (0.0..=1.0).contains(&t[0]));
+                        assert!(t[1].is_finite() && (0.0..=1.0).contains(&t[1]));
+                    }
+                }
+            }
+        }
     }
 }
