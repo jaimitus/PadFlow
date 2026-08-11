@@ -60,10 +60,13 @@ Every release is documented in **[CHANGELOG.md](./CHANGELOG.md)** — full histo
 | **Anti-Double-Input (HidHide)** | **Integrated (1-click)** | Manual / Plugin | Proprietary | N/A | Limited |
 | **Interactive Curve Canvas** | **Yes (Real-time 60 FPS)** | Basic Preset | Paid Feature | Basic Sliders | Basic Sliders |
 | **1 kHz Turbo Polling** | **Native** | Configurable | Configurable | Driver Dependent | Limited |
+| **Simultaneous Controllers** | **Up to 4 (multi-slot)** | Up to 8 | Up to 4 | Up to 16 (API) | Multiple (limited) |
 | **Privacy / Telemetry** | **0% (100% Offline)** | 100% Offline | Online Checks | Steam Telemetry | Offline |
 | **Price / License** | **Free (MIT)** | Free (Open) | Paid License | Bundled with Steam | Paid / Freemium |
 | **Custom Saved Profiles** | **Yes + JSON Export** | Yes | Yes (Paid) | Cloud Sync | Yes |
 | **Portable Executable** | **Yes (Standalone)** | Zip Extraction | No (Install Only) | No | Limited |
+
+> **\* Simultaneous Controllers** = PlayStation pads connected and **emulated as virtual Xbox 360 pads** at the same time. Steam Input's *16* is its API handle limit — it does not offer ViGEmBus-style virtual XInput emulation for arbitrary games.
 
 ---
 
