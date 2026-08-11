@@ -4,7 +4,7 @@ All notable changes to **PadFlow** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> 🤖 **Automated:** every time a release is published on GitHub, the `Changelog - auto-update CHANGELOG.md` workflow prepends the release notes to this file. No manual editing needed for new releases.
+> 🤖 **Automated:** the release pipeline prepends the release notes to this file every time a version is published — no manual editing needed. (The `Changelog - auto-update CHANGELOG.md` workflow remains available for manual backfills and for releases published outside the pipeline.)
 
 ---
 

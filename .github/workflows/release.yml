@@ -136,3 +136,50 @@ jobs:
           echo "published assets: $COUNT"
           [ "$COUNT" -ge 6 ] || { echo "FAIL - expected 6 assets (nsis, nsis.sig, msi, msi.sig, portable, latest.json), got $COUNT"; exit 1; }
           echo "OK - all 6 assets published"
+
+      # Keep CHANGELOG.md in sync right here, inside the pipeline: the
+      # `release: published` webhook is NOT reliably delivered for releases
+      # created with GITHUB_TOKEN from a workflow, so we do it in-band.
+      - name: Update CHANGELOG.md (auto-changelog)
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Work on the default branch so the entry lands on main.
+          git fetch origin main
+          git checkout -B main origin/main
+
+          VERSION="${TAG#v}"
+          DATE=$(date -u +%Y-%m-%d)
+
+          test -f CHANGELOG.md || { echo "FAIL - CHANGELOG.md not found in repo"; exit 1; }
+
+          # Idempotency: skip when an entry for this version already exists.
+          if grep -Fq "## [${VERSION}]" CHANGELOG.md; then
+            echo "OK - CHANGELOG.md already has an entry for v${VERSION}, skipping"
+            exit 0
+          fi
+
+          # Fetch the release body via the API; empty bodies become "".
+          NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.body // ""')
+          # Drop a leading markdown title line — the version is in the heading.
+          NOTES=$(printf '%s\n' "$NOTES" | awk 'NR==1 && /^# / { next } { print }')
+
+          {
+            printf '## [%s] - %s\n\n' "$VERSION" "$DATE"
+            printf '%s\n' "$NOTES"
+            printf '\n---\n\n'
+            cat CHANGELOG.md
+          } > CHANGELOG.tmp
+          mv CHANGELOG.tmp CHANGELOG.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: add changelog entry for ${TAG}"
+          git pull --rebase origin main
+          git push origin main
+          echo "OK - CHANGELOG.md updated on main"

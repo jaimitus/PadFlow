@@ -157,7 +157,7 @@ upload needed. Three workflows guard the pipeline:
 # 1. Bump the version everywhere (package.json, package-lock.json,
 #    src/lib/version.ts, src-tauri/Cargo.toml, src-tauri/tauri.conf.json)
 #    and write RELEASE_NOTES.md (the release notes — the changelog entry is added
-#    to CHANGELOG.md automatically when the release is published).
+#    to CHANGELOG.md automatically by the release pipeline).
 
 # 2. Commit and push the bump.
 
