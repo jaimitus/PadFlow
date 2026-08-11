@@ -344,6 +344,99 @@ pub fn circularity_correct(x: f32, y: f32, max_x: &mut f32, max_y: &mut f32) -> 
 }
 
 // ---------------------------------------------------------------------------
+// Gyro shaping (v1.2.5) — rest calibration, EMA smoothing, jitter deadzone
+// and motion routing. All pure functions so the pipeline is unit-testable.
+// ---------------------------------------------------------------------------
+
+/// While the pad is this still, the gyro rest offset folds toward the raw
+/// reading (auto-recenter, so sensor drift never accumulates).
+pub const GYRO_STILL_THRESHOLD: f32 = 0.02;
+
+/// Smoothed gyro rates below this magnitude are treated as jitter and zeroed.
+pub const GYRO_JITTER_DEADZONE: f32 = 0.004;
+
+/// Rest-offset EMA fold factor per still frame.
+const GYRO_REST_ALPHA: f32 = 0.1;
+
+/// Updates the gyro rest offset (auto-recenter). While the pad is still
+/// (magnitude below [`GYRO_STILL_THRESHOLD`]) — or before the first
+/// calibration — the rest offset is folded toward the raw reading; a forced
+/// recalibration snapshots it instantly. Returns the updated `(rest,
+/// calibrated)`.
+#[inline(always)]
+pub fn gyro_update_rest(
+    raw: [f32; 3],
+    rest: [f32; 3],
+    calibrated: bool,
+    force: bool,
+) -> ([f32; 3], bool) {
+    if force {
+        return (raw, true);
+    }
+    let mag = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+    if !calibrated || mag < GYRO_STILL_THRESHOLD {
+        let mut next = [0.0f32; 3];
+        for i in 0..3 {
+            next[i] = rest[i] * (1.0 - GYRO_REST_ALPHA) + raw[i] * GYRO_REST_ALPHA;
+        }
+        (next, true)
+    } else {
+        (rest, calibrated)
+    }
+}
+
+/// EMA-smooths the gyro rates after rest subtraction. `alpha` is the smoothing
+/// factor (higher = smoother), clamped to `0.0..=0.95`.
+#[inline(always)]
+pub fn gyro_smooth(raw: [f32; 3], rest: [f32; 3], prev: [f32; 3], alpha: f32) -> [f32; 3] {
+    let a = alpha.clamp(0.0, 0.95);
+    let mut out = [0.0f32; 3];
+    for i in 0..3 {
+        let v = raw[i] - rest[i];
+        out[i] = prev[i] * a + v * (1.0 - a);
+    }
+    out
+}
+
+/// Zeroes smoothed gyro rates below the jitter deadzone (keeps `>= dz`).
+#[inline(always)]
+pub fn gyro_deadzone(v: [f32; 3], dz: f32) -> [f32; 3] {
+    let mut out = v;
+    for i in 0..3 {
+        if out[i].abs() < dz {
+            out[i] = 0.0;
+        }
+    }
+    out
+}
+
+/// Gyro → right-stick offset: yaw (`gyro[1]`) drives X, pitch (`gyro[0]`)
+/// drives Y, both scaled by `1.6 * sensitivity`. Returns `(dx, dy)`.
+#[inline(always)]
+pub fn gyro_stick_offset(gyro: [f32; 3], sensitivity: f32, invert: bool) -> (f32, f32) {
+    let sens = sensitivity.clamp(0.1, 8.0);
+    let ox = gyro[1] * 1.6 * sens;
+    let mut oy = gyro[0] * 1.6 * sens;
+    if invert {
+        oy = -oy;
+    }
+    (ox, oy)
+}
+
+/// Gyro → mouse delta: pitch (`gyro[0]`) → Y, yaw (`gyro[1]`) → X, scaled by
+/// `220 * sensitivity` pixels per rate unit. Returns `(dx, dy)`.
+#[inline(always)]
+pub fn gyro_mouse_delta(gyro: [f32; 3], sensitivity: f32, invert: bool) -> (f32, f32) {
+    let sens = sensitivity.clamp(0.1, 8.0);
+    let dx = gyro[1] * 220.0 * sens;
+    let mut dy = gyro[0] * 220.0 * sens;
+    if invert {
+        dy = -dy;
+    }
+    (dx, dy)
+}
+
+// ---------------------------------------------------------------------------
 // Response-curve mathematics
 // ---------------------------------------------------------------------------
 
@@ -1458,44 +1551,21 @@ where
 
             // ---- gyro: auto rest-calibration, smoothing and routing ---------
             if prof.gyro_enabled && p.info.has_gyro {
-                if inner.gyro_calibrate_request.swap(false, Ordering::Relaxed) {
-                    p.gyro_calibrated = false;
-                    p.gyro_rest = raw.gyro;
-                }
-                // Auto-recenter: while the pad is still, slowly fold the rest
-                // offset so drift never accumulates.
-                let mag = (raw.gyro[0] * raw.gyro[0]
-                    + raw.gyro[1] * raw.gyro[1]
-                    + raw.gyro[2] * raw.gyro[2])
-                    .sqrt();
-                if !p.gyro_calibrated || mag < 0.02 {
-                    for i in 0..3 {
-                        p.gyro_rest[i] = p.gyro_rest[i] * 0.9 + raw.gyro[i] * 0.1;
-                    }
-                    p.gyro_calibrated = true;
-                }
-                let a = prof.gyro_smoothing.clamp(0.0, 0.95);
-                for i in 0..3 {
-                    let v = raw.gyro[i] - p.gyro_rest[i];
-                    p.gyro_smooth[i] = p.gyro_smooth[i] * a + v * (1.0 - a);
-                }
-                let mut gyro = p.gyro_smooth;
-                // Micro-jitter deadzone on the smoothed rate.
-                let dz = 0.004;
-                for i in 0..3 {
-                    if gyro[i].abs() < dz {
-                        gyro[i] = 0.0;
-                    }
-                }
-                let sens = prof.gyro_sensitivity.clamp(0.1, 8.0);
+                let force = inner.gyro_calibrate_request.swap(false, Ordering::Relaxed);
+                (p.gyro_rest, p.gyro_calibrated) =
+                    gyro_update_rest(raw.gyro, p.gyro_rest, p.gyro_calibrated, force);
+                p.gyro_smooth = gyro_smooth(
+                    raw.gyro,
+                    p.gyro_rest,
+                    p.gyro_smooth,
+                    prof.gyro_smoothing,
+                );
+                let gyro = gyro_deadzone(p.gyro_smooth, GYRO_JITTER_DEADZONE);
                 match prof.gyro_mode {
                     GyroMode::RightStick => {
                         // Direct tilt→stick mapping: yaw drives X, pitch drives Y.
-                        let ox = gyro[1] * 1.6 * sens;
-                        let mut oy = gyro[0] * 1.6 * sens;
-                        if prof.gyro_invert {
-                            oy = -oy;
-                        }
+                        let (ox, oy) =
+                            gyro_stick_offset(gyro, prof.gyro_sensitivity, prof.gyro_invert);
                         rx = (rx + ox).clamp(-1.0, 1.0);
                         ry = (ry + oy).clamp(-1.0, 1.0);
                     }
@@ -1503,11 +1573,8 @@ where
                         #[cfg(windows)]
                         {
                             // pitch → Y, yaw → X (absolute-rate aiming).
-                            let dx = gyro[1] * 220.0 * sens;
-                            let mut dy = gyro[0] * 220.0 * sens;
-                            if prof.gyro_invert {
-                                dy = -dy;
-                            }
+                            let (dx, dy) =
+                                gyro_mouse_delta(gyro, prof.gyro_sensitivity, prof.gyro_invert);
                             if dx.abs() > 0.01 || dy.abs() > 0.01 {
                                 mouse_win::move_cursor(dx as i32, dy as i32);
                             }
@@ -1910,5 +1977,186 @@ mod tests {
             assert!(x >= -1.0 && x <= 1.0, "x out of range: {x}");
             assert!(y >= -1.0 && y <= 1.0, "y out of range: {y}");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.2.5 gyro shaping (regression) — rest calibration, EMA, deadzone,
+    // routing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gyro_rest_calibrates_when_still() {
+        // Slow sensor drift below the still threshold folds into the rest
+        // offset: after n frames rest = raw * (1 - 0.9^n).
+        let raw = [0.01, -0.008, 0.005];
+        let (mut rest, mut cal) = ([0.0; 3], false);
+        for _ in 0..5 {
+            (rest, cal) = gyro_update_rest(raw, rest, cal, false);
+        }
+        assert!(cal);
+        let f = 1.0 - 0.9f32.powi(5);
+        for i in 0..3 {
+            assert!(
+                (rest[i] - raw[i] * f).abs() < 1e-4,
+                "axis {i}: {} vs {}",
+                rest[i],
+                raw[i] * f
+            );
+        }
+    }
+
+    #[test]
+    fn gyro_rest_holds_while_moving() {
+        // Real motion (above the still threshold) never folds into the rest
+        // offset once calibrated — no drift is introduced by gameplay.
+        let raw = [0.5, -0.3, 0.2];
+        let (rest, cal) = gyro_update_rest(raw, [0.01, -0.01, 0.0], true, false);
+        assert!(cal);
+        assert_eq!(rest, [0.01, -0.01, 0.0]);
+    }
+
+    #[test]
+    fn gyro_force_recalibration_snapshots_instantly() {
+        // A forced recalibration snaps the rest offset even during motion.
+        let raw = [0.9, -0.7, 0.3];
+        let (rest, cal) = gyro_update_rest(raw, [0.0; 3], true, true);
+        assert!(cal);
+        assert_eq!(rest, raw);
+    }
+
+    #[test]
+    fn gyro_rest_converges_to_constant_offset() {
+        // A stationary pad with a sub-threshold sensor bias: the auto-recenter
+        // folds the whole bias into the rest offset over time.
+        let offset = [0.01, -0.008, 0.006]; // mag ≈ 0.014 < 0.02 (still)
+        let (mut rest, mut cal) = ([0.0; 3], false);
+        for _ in 0..200 {
+            (rest, cal) = gyro_update_rest(offset, rest, cal, false);
+        }
+        assert!(cal);
+        for i in 0..3 {
+            assert!((rest[i] - offset[i]).abs() < 1e-3, "axis {i}");
+        }
+    }
+
+    #[test]
+    fn gyro_rest_first_frame_calibrates_even_in_motion() {
+        // The very first frame always calibrates (no rest offset yet), so a
+        // moving start-up can't spin the cursor out of control.
+        let raw = [0.4, -0.2, 0.1];
+        let (rest, cal) = gyro_update_rest(raw, [0.0; 3], false, false);
+        assert!(cal);
+        assert!((rest[0] - 0.04).abs() < 1e-4); // 10% fold from zero
+    }
+
+    #[test]
+    fn gyro_smoothing_converges_toward_signal() {
+        // A constant input converges to itself under the EMA.
+        let raw = [0.2, 0.0, 0.0];
+        let mut prev = [0.0; 3];
+        let mut last = 0.0;
+        for _ in 0..20 {
+            prev = gyro_smooth(raw, [0.0; 3], prev, 0.5);
+            last = prev[0];
+        }
+        assert!((last - 0.2).abs() < 1e-3, "EMA must converge, got {last}");
+    }
+
+    #[test]
+    fn gyro_smoothing_first_frame_is_step_scaled() {
+        // A step input lands at (1 - alpha) * step on the first frame.
+        let out = gyro_smooth([0.4, 0.0, 0.0], [0.0; 3], [0.0; 3], 0.75);
+        assert!((out[0] - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gyro_smoothing_zero_alpha_is_passthrough() {
+        // alpha 0 → no smoothing: output is exactly raw - rest, prev is ignored.
+        let out = gyro_smooth([0.5, -0.2, 0.1], [0.05, 0.0, 0.0], [99.0, 99.0, 99.0], 0.0);
+        assert_eq!(out, [0.45, -0.2, 0.1]);
+    }
+
+    #[test]
+    fn gyro_smoothing_alpha_is_clamped() {
+        // alpha above 0.95 clamps to 0.95 — the EMA can never be fully sticky.
+        let out = gyro_smooth([0.5, 0.0, 0.0], [0.0; 3], [0.0; 3], 2.0);
+        assert!((out[0] - 0.025).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gyro_deadzone_zeroes_jitter_but_keeps_motion() {
+        let v = gyro_deadzone([0.002, 0.1, -0.003], GYRO_JITTER_DEADZONE);
+        assert_eq!(v, [0.0, 0.1, 0.0]);
+    }
+
+    #[test]
+    fn gyro_deadzone_keeps_threshold_boundary() {
+        // Exactly at the deadzone (>=) is kept.
+        let v = gyro_deadzone(
+            [GYRO_JITTER_DEADZONE, -GYRO_JITTER_DEADZONE, 0.0],
+            GYRO_JITTER_DEADZONE,
+        );
+        assert_eq!(v, [GYRO_JITTER_DEADZONE, -GYRO_JITTER_DEADZONE, 0.0]);
+    }
+
+    #[test]
+    fn gyro_stick_offset_yaw_drives_x_pitch_drives_y() {
+        let (ox, oy) = gyro_stick_offset([0.25, -0.5, 0.0], 2.0, false);
+        assert!((ox - (-0.5 * 1.6 * 2.0)).abs() < 1e-4);
+        assert!((oy - (0.25 * 1.6 * 2.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gyro_stick_offset_invert_flips_pitch_only() {
+        let (ox, oy) = gyro_stick_offset([0.1, 0.2, 0.0], 1.0, true);
+        assert!((ox - 0.32).abs() < 1e-4); // yaw untouched
+        assert!((oy + 0.16).abs() < 1e-4); // pitch inverted
+    }
+
+    #[test]
+    fn gyro_stick_offset_clamps_sensitivity() {
+        let (ox, _) = gyro_stick_offset([0.0, 1.0, 0.0], 99.0, false);
+        assert!((ox - 8.0 * 1.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gyro_mouse_delta_pitch_to_y_yaw_to_x() {
+        let (dx, dy) = gyro_mouse_delta([0.1, 0.2, 0.0], 1.0, false);
+        assert!((dx - 44.0).abs() < 1e-3);
+        assert!((dy - 22.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn gyro_mouse_delta_invert_flips_dy_only() {
+        let (dx, dy) = gyro_mouse_delta([0.1, 0.2, 0.0], 1.0, true);
+        assert!((dx - 44.0).abs() < 1e-3);
+        assert!((dy + 22.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn gyro_pipeline_calibrates_then_routes_to_stick() {
+        // End-to-end: still frames fold the rest offset and the residual
+        // jitter is deadzoned to zero; then a real yaw movement survives the
+        // pipeline and drives positive X on the right stick.
+        let still = [0.005, -0.004, 0.002];
+        let mut rest = [0.0; 3];
+        let mut cal = false;
+        let mut smooth = [0.0; 3];
+        for _ in 0..10 {
+            (rest, cal) = gyro_update_rest(still, rest, cal, false);
+            smooth = gyro_smooth(still, rest, smooth, 0.5);
+        }
+        assert!(cal);
+        let gyro = gyro_deadzone(smooth, GYRO_JITTER_DEADZONE);
+        assert_eq!(gyro, [0.0; 3], "still residue must be deadzoned");
+
+        // Real yaw movement: rest is untouched, motion shows up in X.
+        let motion = [0.0, 0.3, 0.0];
+        (rest, cal) = gyro_update_rest(motion, rest, cal, false);
+        smooth = gyro_smooth(motion, rest, smooth, 0.5);
+        let gyro = gyro_deadzone(smooth, GYRO_JITTER_DEADZONE);
+        let (ox, oy) = gyro_stick_offset(gyro, 1.0, false);
+        assert!(ox > 0.0, "yaw must drive positive X, got {ox}");
+        assert!((oy).abs() < 1e-6, "pitch-free movement must not drive Y");
     }
 }
