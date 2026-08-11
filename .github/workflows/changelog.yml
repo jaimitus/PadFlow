@@ -26,8 +26,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Prepend release notes
         id: prepend
@@ -37,8 +35,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          # Validate the tag format (consistency with the release pipeline).
+          case "$TAG" in
+            v*.*.*) ;;
+            *) echo "FAIL - invalid release tag: '$TAG' (expected v*.*.*)"; exit 1 ;;
+          esac
           VERSION="${TAG#v}"
           DATE=$(date -u +%Y-%m-%d)
+
+          test -f CHANGELOG.md || { echo "FAIL - CHANGELOG.md not found in repo"; exit 1; }
 
           # Idempotency: skip when an entry for this version already exists.
           if grep -Fq "## [${VERSION}]" CHANGELOG.md; then
@@ -48,8 +54,9 @@ jobs:
           fi
 
           # Fetch the release body via the API (avoids YAML-escaping issues
-          # with quotes/newlines in ${{ github.event.release.body }}).
-          NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .body)
+          # with quotes/newlines in ${{ github.event.release.body }}); empty
+          # bodies become an empty string, not the literal text "null".
+          NOTES=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.body // ""')
 
           # Drop a leading markdown title line ("# PadFlow vX.Y.Z — ...") — the
           # version is already in the new heading we add.
@@ -74,5 +81,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
           git commit -m "docs: add changelog entry for ${TAG}"
+          # Rebase onto main in case it moved while we were working, then push.
+          git pull --rebase origin main
           git push origin main
           echo "OK - CHANGELOG.md updated on main"
