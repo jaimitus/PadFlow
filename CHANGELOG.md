@@ -8,6 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.2.6] - 2026-08-11
+
+### Fixed
+
+- **🐛 DualSense HID parser off-by-one (poll-thread crash):** the length guard for the motion block was one byte short of the deepest `le_i16` read — a truncated Bluetooth/USB report could **panic the 1 kHz polling thread** instead of being dropped. Caught by the new regression suite, fixed (`o+26` → `o+27`).
+- **🐛 DualSense HID parser off-by-one (truncated reports):** the core length guard read one index past the floor (`b3` at `o+9`), panicking on 10–11 byte reports. Fixed and covered by boundary tests.
+- **🔄 Circularity correction was a silent no-op:** the per-axis reach trackers were seeded at `1.0`, but inputs are normalized `[-1, 1]`, so the running max never learned the real reach and dividing by 1.0 changed nothing. Now seeded at `0.02` with learn hysteresis (`≥ 0.5` deflection only) and **pass-through until measured** — fine-aim inputs are never amplified.
+
+### Added
+
+- **🧪 Regression test suite (from ~4 to 59 tests):**
+  - Button remapping (6): identity, cross/circle swap, unmapped passthrough, non-XInput source, target bit masking, shared targets.
+  - Circularity correction (8): per-axis reach learning, proportional mapping, unit-circle diagonal, monotonic reach, negative direction, fine-aim pass-through, strong-sample-only learning, output clamping.
+  - Gyro shaping (20): rest-calibration (auto-recenter EMA, force snapshot, thresholds), smoothing EMA, deadzone, stick/mouse routing, full pipeline.
+  - HID parsing (14): DS4 + DualSense USB/BT buffers (sticks, buttons, battery, motion, touchpad, offsets, truncated), plus exact motion-floor boundaries.
+  - Output reports (1) + CRC-32 (2): well-formed lightbar/rumble reports with valid CRC over BT, known vectors, determinism.
+- **🧪 Deterministic fuzzing (no external deps, splitmix64 PRNG):**
+  - 50k random parser buffers run on every `cargo test` (crash recording pins the exact failing input).
+  - **Deep fuzz suite (500k buffers + 200k CRC combos + 200k hot-loop reports)** gated `#[ignore]`, run by a dedicated CI job.
+  - Hot-loop fuzz covers the full pipeline: shape → remap → circularity → gyro over randomly parsed reports.
+
+### Changed
+
+- **🔒 Release quality gate:** the release pipeline now runs the complete deep fuzz suite in parallel and **blocks publishing** (`needs: deep-fuzz`) until it passes.
+- The circularity correction and gyro shaping were extracted into pure functions, making the 1 kHz hot loop fully unit-testable.
+
+---
+
 ## [1.2.5] - 2026-08-11
 
 ### Added

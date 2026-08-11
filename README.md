@@ -1,6 +1,6 @@
 # 🎮 PadFlow — Next-Gen Gamepad Input Calibrator & ViGEmBus Bridge
 
-[![Release](https://img.shields.io/badge/Release-v1.2.5-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
+[![Release](https://img.shields.io/badge/Release-v1.2.6-cyan.svg?style=for-the-badge&logo=windows)](https://github.com/jaimitus/PadFlow/releases)
 [![License](https://img.shields.io/badge/License-MIT-violet.svg?style=for-the-badge)](./LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-orange.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/jaimitus)
 
@@ -14,16 +14,13 @@
 
 ---
 
-## 🚀 What's New in v1.2.5 / Novedades de la Versión 1.2.5
+## 🚀 What's New in v1.2.6 / Novedades de la Versión 1.2.6
 
-- **🌀 Gyro Motion Control:** aim with the controller — gyro→mouse or gyro→right stick, with sensitivity, smoothing, invert and one-tap recalibration. Works on DualShock 4 / DualSense / DualSense Edge and is stored **per profile**.
-- **🔄 Real Circularity Correction:** the engine now remaps each physical stick's elliptical range toward a perfect circle — beyond the existing measurement tester.
-- **🔘 Button Remapping:** map any of the 14 physical PS buttons to any XInput output (cross→A, circle→B, ...) per profile, with a one-click identity reset.
-- **🎮 Per-Game Profiles:** assign the current profile to a focused game (`.exe`) and PadFlow auto-switches to it whenever that game takes focus — restoring your controller profile when you leave.
-- **🌍 Spanish / English (i18n):** the whole UI is now localized (ES/EN) with a header toggle and a persisted preference.
-- **📈 Input Oscilloscope:** live 5 s strip-chart of sticks and triggers.
-- **⚙️ Settings Panel:** start minimized to tray, minimize-to-tray on close, launch at Windows startup (persisted in the backend store).
-- **🩺 Diagnostic Report:** one-tap report with app version, OS, drivers (ViGEmBus / HidHide) and engine stats — copied to the clipboard for support.
+- **🐛 HID parser hardening:** the deep deterministic fuzz suite caught and fixed **two off-by-one bugs** in the DualSense report parser that could crash the polling thread on truncated reports — plus the circularity correction, which was a silent no-op, now really learns and corrects the stick reach.
+- **🧪 59 engine regression tests + deep fuzzing:** the 1 kHz engine is now fuzzed end-to-end (input parsing, hot loop processing and output report construction with CRC-32) on every push and — new — **every release is gated**: a release never publishes until the full fuzz suite (500k+ buffers) passes.
+- **🔒 Release quality gate:** the release pipeline now runs the complete fuzz suite in parallel and **blocks publishing** until it's green.
+
+See the full history in **[CHANGELOG.md](./CHANGELOG.md)**.
 
 ---
 
@@ -88,8 +85,8 @@ PadFlow is **Windows-only (10 / 11, x64)** by design:
 Download the latest release from [Releases](https://github.com/jaimitus/PadFlow/releases):
 
 1. **`PadFlow-Portable.exe`** — Single standalone executable. No installation required.
-2. **`PadFlow_1.2.5_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
-3. **`PadFlow_1.2.5_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
+2. **`PadFlow_1.2.6_x64-setup.exe`** — Recommended Windows installer with start menu shortcuts and bundled driver setup.
+3. **`PadFlow_1.2.6_x64_en-US.msi`** — Standard MSI installer package for enterprise / automated deployment.
 
 > **Note:** PadFlow requires the **ViGEmBus driver** (`v1.22.0+`) for virtual Xbox 360 controller emulation, and supports the **HidHide driver** for anti-double-input device cloaking. If missing, PadFlow provides interactive 1-click in-app installer launchers for both official signed drivers.
 
@@ -161,11 +158,11 @@ upload needed. Three workflows guard the pipeline:
 
 # 2. Commit and push the bump.
 
-git add -A && git commit -m "v1.2.5: <summary of changes>" && git push origin main
+git add -A && git commit -m "v1.2.6: <summary of changes>" && git push origin main
 
 # 3. Tag and push — the pipeline does the rest (build, sign, release, latest.json).
 
-git tag v1.2.5 && git push origin v1.2.5
+git tag v1.2.6 && git push origin v1.2.6
 ```
 
 > **Guardrail:** the workflow refuses to run unless the tag version matches

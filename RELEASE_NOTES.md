@@ -1,31 +1,23 @@
-# 🎮 PadFlow v1.2.5 — The Big Feature Drop
+# 🎮 PadFlow v1.2.6 — Engine Hardening
 
-8 new features, all wired into the 1 kHz engine:
+This release is all about **bulletproofing the engine**: the new regression suite and deep fuzzing pipeline caught and fixed real bugs, and every release is now gated on the full fuzz suite before publishing.
 
-## 🌀 Gyro Motion Control
-Aim with the controller — **gyro → mouse** or **gyro → right stick**, with sensitivity, smoothing, invert and one-tap recalibration. Works on DualShock 4, DualSense and DualSense Edge, and is stored **per profile**.
+## 🐛 Bug fixes
 
-## 🔄 Real Circularity Correction
-The engine now **corrects** each physical stick's elliptical range toward a perfect circle — beyond the existing measurement tester.
+- **DualSense HID parser off-by-one (poll-thread crash):** the motion-block length guard was one byte short of the deepest read — a truncated report could crash the 1 kHz polling thread. Now it degrades gracefully.
+- **DualSense HID parser off-by-one (truncated reports):** the core guard read one index past its floor on 10–11 byte reports. Fixed with exact boundary tests.
+- **🔄 Circularity correction was a silent no-op:** the per-axis reach tracker was seeded at `1.0` but inputs are `[-1, 1]` — it never learned the real reach. Now seeded correctly with learn hysteresis and **pass-through until measured**, so fine-aim inputs are never amplified.
 
-## 🔘 Button Remapping
-Map any of the **14 physical PS buttons** to any XInput output (✕→A, ○→B, L1→LB...), per profile, with a one-click identity reset.
+## 🧪 Quality
 
-## 🎮 Per-Game Profiles
-Assign the current profile to a focused game (`.exe`) — PadFlow **auto-switches** to it whenever that game takes focus and restores your controller profile when you leave.
+- **59 regression tests** (up from ~4): button remapping, circularity, gyro shaping, HID parsing (DS4/DualSense USB+BT), output reports and CRC-32.
+- **Deterministic fuzzing** with zero dependencies: 50k buffers on every test run, plus a **deep suite of 500k+ inputs** (parsers + CRC + full hot-loop pipeline) in a dedicated CI job.
+- The whole processing pipeline (shape → remap → circularity → gyro) is now pure and unit-tested.
 
-## 🌍 Spanish / English (i18n)
-The whole UI is now localized in **ES/EN** with a header toggle and a persisted preference.
+## 🔒 Release gate
 
-## 📈 Input Oscilloscope
-Live 5-second strip-chart of sticks and triggers.
-
-## ⚙️ Settings Panel
-Start minimized to tray, minimize-to-tray on close, launch at Windows startup — persisted in the backend store.
-
-## 🩺 Diagnostic Report
-One-tap report with app version, OS, drivers (ViGEmBus / HidHide) and engine stats — copied to the clipboard for support.
+- Every release **runs the full fuzz suite and blocks publishing** until it's green — a broken version can never ship again.
 
 ---
 
-**Includes everything from v1.2.4**: automated release pipeline, CI manifest check, `requireAdministrator` elevation, HidHide Shield Control Center, auto-cloak, tray controls and signed one-click updates.
+**Install:** [PadFlow_1.2.6_x64-setup.exe](https://github.com/jaimitus/PadFlow/releases/latest) · [MSI](https://github.com/jaimitus/PadFlow/releases/latest) · [Portable](https://github.com/jaimitus/PadFlow/releases/latest)
