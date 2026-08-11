@@ -686,7 +686,9 @@ fn parse_ds4(buf: &[u8], bt: bool) -> Option<RawState> {
 /// DualSense / DualSense Edge — USB report `0x01` (64 B) / BT report `0x31` (78 B).
 fn parse_dualsense(buf: &[u8], bt: bool) -> Option<RawState> {
     let o = if bt { 2usize } else { 1usize };
-    if buf.len() < o + 9 {
+    // b3 lives at `o + 9`, so the floor must be `o + 10` — an off-by-one here
+    // made a truncated report panic the poll thread instead of returning None.
+    if buf.len() < o + 10 {
         return None;
     }
     let mut s = RawState::default();
@@ -2182,5 +2184,313 @@ mod tests {
         let (ox, oy) = gyro_stick_offset(gyro, 1.0, false);
         assert!(ox > 0.0, "yaw must drive positive X, got {ox}");
         assert!((oy).abs() < 1e-6, "pitch-free movement must not drive Y");
+    }
+
+    // -----------------------------------------------------------------------
+    // HID report parsing (regression) — synthetic DS4 / DualSense buffers
+    // -----------------------------------------------------------------------
+
+    /// u8_to_axis(128) — the true analogue centre of the 0..255 range.
+    const CENTRE: f32 = 0.5 / 127.5;
+
+    #[test]
+    fn parse_ds4_usb_sticks_triggers_and_buttons() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01; // USB input report
+        // Sticks: LX full right, LY full up, RX full left, RY full down.
+        buf[1] = 255; // lx -> +1.0
+        buf[2] = 0; // ly raw 0 -> +1.0 (up)
+        buf[3] = 0; // rx -> -1.0
+        buf[4] = 255; // ry raw 255 -> -1.0 (down)
+        let s = parse_ds4(&buf, false).expect("64-byte USB report must parse");
+        assert!((s.lx - 1.0).abs() < 1e-4);
+        assert!((s.ly - 1.0).abs() < 1e-4);
+        assert!((s.rx + 1.0).abs() < 1e-4);
+        assert!((s.ry + 1.0).abs() < 1e-4);
+        // Triggers: L2 full, R2 released.
+        buf[8] = 255;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert!((s.l2 - 1.0).abs() < 1e-4);
+        assert_eq!(s.r2, 0.0);
+        // Buttons: b1 = CROSS (+ dpad 0), b2 = R3, b3 = PS.
+        buf[5] = 0x20;
+        buf[6] = 0x80;
+        buf[7] = 0x01;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert_eq!(s.buttons, buttons::CROSS | buttons::R3 | buttons::PS);
+        assert_eq!(s.dpad, 0); // up
+    }
+
+    #[test]
+    fn parse_ds4_usb_all_buttons() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        buf[5] = 0x10 | 0x20 | 0x40 | 0x80; // face buttons, dpad 0
+        buf[6] = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80;
+        buf[7] = 0x01 | 0x02; // PS + TOUCHPAD
+        let s = parse_ds4(&buf, false).unwrap();
+        assert_eq!(
+            s.buttons,
+            buttons::SQUARE
+                | buttons::CROSS
+                | buttons::CIRCLE
+                | buttons::TRIANGLE
+                | buttons::L1
+                | buttons::R1
+                | buttons::L2
+                | buttons::R2
+                | buttons::SHARE
+                | buttons::OPTIONS
+                | buttons::L3
+                | buttons::R3
+                | buttons::PS
+                | buttons::TOUCHPAD
+        );
+    }
+
+    #[test]
+    fn parse_ds4_usb_battery_and_charging() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        // Cable (bit 4) + level 10/11.
+        buf[30] = 0x10 | 0x0A;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert!(s.charging);
+        assert_eq!(s.battery, 90); // (10/11)*100 = 90.9 -> 90
+        // No cable, level 8/8.
+        buf[30] = 0x08;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert!(!s.charging);
+        assert_eq!(s.battery, 100);
+    }
+
+    #[test]
+    fn parse_ds4_motion_block() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        // gyro: +1024 (1.0), -1024, 0 (16-bit LE).
+        buf[13] = 0x00;
+        buf[14] = 0x04;
+        buf[15] = 0x00;
+        buf[16] = 0xFC;
+        buf[17] = 0x00;
+        buf[18] = 0x00;
+        // accel: +8192 (1.0), 0, -8192.
+        buf[19] = 0x00;
+        buf[20] = 0x20;
+        buf[21] = 0x00;
+        buf[22] = 0x00;
+        buf[23] = 0x00;
+        buf[24] = 0xE0;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert!((s.gyro[0] - 1.0).abs() < 1e-3);
+        assert!((s.gyro[1] + 1.0).abs() < 1e-3);
+        assert!(s.gyro[2].abs() < 1e-3);
+        assert!((s.accel[0] - 1.0).abs() < 1e-3);
+        assert!((s.accel[2] + 1.0).abs() < 1e-3, "accel z must be -1.0");
+    }
+
+    #[test]
+    fn parse_ds4_touchpad_active_and_inactive() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        // Finger 1 active at (959, 471): 12-bit packed X/Y.
+        buf[35] = 0x00; // active (0x80 clear)
+        buf[36] = 0xBF; // x low byte (0x3BF = 959)
+        buf[37] = 0x73; // x high nibble 0x3 | y low nibble 0x7 << 4
+        buf[38] = 0x1D; // y high byte (0x1D7 = 471)
+        // Finger 2 inactive.
+        buf[39] = 0x80;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert_eq!(s.touch_count, 1);
+        assert!((s.touch[0][0] - 959.0 / 1919.0).abs() < 1e-4);
+        assert!((s.touch[0][1] - 471.0 / 942.0).abs() < 1e-4);
+        // Both fingers inactive -> no touches.
+        buf[35] = 0x80;
+        let s = parse_ds4(&buf, false).unwrap();
+        assert_eq!(s.touch_count, 0);
+    }
+
+    #[test]
+    fn parse_ds4_neutral_centre_and_idle_dpad() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        buf[1] = 128;
+        buf[2] = 128;
+        buf[3] = 128;
+        buf[4] = 128;
+        buf[5] = 0x08; // dpad 8 = neutral (no direction)
+        let s = parse_ds4(&buf, false).unwrap();
+        assert!((s.lx - CENTRE).abs() < 1e-4);
+        assert!((s.ly + CENTRE).abs() < 1e-4);
+        assert_eq!(s.buttons, 0);
+        assert_eq!(s.dpad, 8);
+    }
+
+    #[test]
+    fn parse_ds4_bluetooth_offset() {
+        let mut buf = [0u8; 78];
+        buf[0] = 0x11; // BT input report
+        // Data starts at offset 3 for DS4 over Bluetooth.
+        buf[3] = 255; // lx -> +1.0
+        buf[4] = 255; // ly -> -1.0 (down)
+        buf[5] = 0; // rx -> -1.0
+        buf[6] = 0; // ry -> +1.0 (up)
+        let s = parse_ds4(&buf, true).unwrap();
+        assert!((s.lx - 1.0).abs() < 1e-4);
+        assert!((s.ly + 1.0).abs() < 1e-4);
+        assert!((s.rx + 1.0).abs() < 1e-4);
+        assert!((s.ry - 1.0).abs() < 1e-4);
+        // Triggers and battery shift with the BT offset (o+7 = 10, o+29 = 32).
+        buf[10] = 255;
+        buf[32] = 0x10 | 0x0B; // cable + level 11/11
+        let s = parse_ds4(&buf, true).unwrap();
+        assert!((s.l2 - 1.0).abs() < 1e-4);
+        assert!(s.charging);
+        assert_eq!(s.battery, 100); // (11/11)*100 — the USB cable divisor is /11
+    }
+
+    #[test]
+    fn parse_ds4_short_and_minimal_buffers() {
+        // Below the 9-byte floor: USB needs >= 10, BT needs >= 12.
+        assert!(parse_ds4(&[0u8; 9], false).is_none());
+        assert!(parse_ds4(&[0u8; 11], true).is_none());
+        // Minimal parseable report: defaults for the extended sections.
+        let mut buf = [0u8; 10];
+        buf[0] = 0x01;
+        let s = parse_ds4(&buf, false).expect("10-byte USB report must parse");
+        assert_eq!(s.battery, -1);
+        assert_eq!(s.gyro, [0.0, 0.0, 0.0]);
+        assert_eq!(s.touch_count, 0);
+    }
+
+    #[test]
+    fn parse_dualsense_usb_full_layout() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        buf[1] = 255; // lx -> +1.0
+        buf[2] = 0; // ly -> +1.0 (up)
+        buf[3] = 0; // rx -> -1.0
+        buf[4] = 255; // ry -> -1.0
+        buf[5] = 255; // l2 -> 1.0
+        buf[6] = 128; // r2 -> ~0.502
+        // Buttons: b1 = dpad 6 (left) | CIRCLE, b2 = L1, b3 = MUTE.
+        buf[8] = 0x40 | 0x06;
+        buf[9] = 0x01;
+        buf[10] = 0x04;
+        let s = parse_dualsense(&buf, false).unwrap();
+        assert!((s.lx - 1.0).abs() < 1e-4);
+        assert!((s.ly - 1.0).abs() < 1e-4);
+        assert!((s.rx + 1.0).abs() < 1e-4);
+        assert!((s.ry + 1.0).abs() < 1e-4);
+        assert!((s.l2 - 1.0).abs() < 1e-4);
+        assert!((s.r2 - 128.0 / 255.0).abs() < 1e-4);
+        assert_eq!(s.buttons, buttons::CIRCLE | buttons::L1 | buttons::MUTE);
+        assert_eq!(s.dpad, 6); // left
+    }
+
+    #[test]
+    fn parse_dualsense_usb_all_buttons() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        buf[8] = 0x10 | 0x20 | 0x40 | 0x80;
+        buf[9] = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x40 | 0x80;
+        buf[10] = 0x01 | 0x02 | 0x04; // PS + TOUCHPAD + MUTE
+        let s = parse_dualsense(&buf, false).unwrap();
+        assert_eq!(
+            s.buttons,
+            buttons::SQUARE
+                | buttons::CROSS
+                | buttons::CIRCLE
+                | buttons::TRIANGLE
+                | buttons::L1
+                | buttons::R1
+                | buttons::L2
+                | buttons::R2
+                | buttons::SHARE
+                | buttons::OPTIONS
+                | buttons::L3
+                | buttons::R3
+                | buttons::PS
+                | buttons::TOUCHPAD
+                | buttons::MUTE
+        );
+    }
+
+    #[test]
+    fn parse_dualsense_motion_and_battery() {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        // Motion at o+15 (index 16): gyro +1024/-1024/0, accel +8192/0/-8192.
+        buf[16] = 0x00;
+        buf[17] = 0x04;
+        buf[18] = 0x00;
+        buf[19] = 0xFC;
+        buf[20] = 0x00;
+        buf[21] = 0x00;
+        buf[22] = 0x00;
+        buf[23] = 0x20;
+        buf[24] = 0x00;
+        buf[25] = 0x00;
+        buf[26] = 0x00;
+        buf[27] = 0xE0;
+        let s = parse_dualsense(&buf, false).unwrap();
+        assert!((s.gyro[0] - 1.0).abs() < 1e-3);
+        assert!((s.gyro[1] + 1.0).abs() < 1e-3);
+        assert!((s.accel[0] - 1.0).abs() < 1e-3);
+        assert!((s.accel[2] + 1.0).abs() < 1e-3, "accel z must be -1.0");
+        // Battery at o+52 (index 53): state 0x10 = charging, level 8/8.
+        buf[53] = 0x10 | 0x08;
+        let s = parse_dualsense(&buf, false).unwrap();
+        assert!(s.charging);
+        assert_eq!(s.battery, 100);
+        // Discharging state (0x0) with full level.
+        buf[53] = 0x08;
+        let s = parse_dualsense(&buf, false).unwrap();
+        assert!(!s.charging);
+        assert_eq!(s.battery, 100);
+    }
+
+    #[test]
+    fn parse_dualsense_bluetooth_offset_and_touch() {
+        let mut buf = [0u8; 78];
+        buf[0] = 0x31; // BT input report
+        // Data starts at offset 2 for DualSense over Bluetooth.
+        buf[2] = 255; // lx -> +1.0
+        buf[3] = 0; // ly -> +1.0 (up)
+        buf[4] = 0; // rx -> -1.0
+        buf[5] = 255; // ry -> -1.0
+        let s = parse_dualsense(&buf, true).unwrap();
+        assert!((s.lx - 1.0).abs() < 1e-4);
+        assert!((s.ly - 1.0).abs() < 1e-4);
+        // Touch at base o+32 (index 34), Y divisor 1079 for DualSense.
+        let mut buf = [0u8; 78];
+        buf[0] = 0x31;
+        buf[34] = 0x00; // active
+        buf[35] = 0xBF; // x low byte (0x3BF = 959)
+        buf[36] = 0x73; // x high nibble | y low nibble << 4
+        buf[37] = 0x1D; // y high byte (0x1D7 = 471)
+        buf[38] = 0x80; // finger 2 inactive
+        let s = parse_dualsense(&buf, true).unwrap();
+        assert_eq!(s.touch_count, 1);
+        assert!((s.touch[0][0] - 959.0 / 1919.0).abs() < 1e-4);
+        assert!((s.touch[0][1] - 471.0 / 1079.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn parse_dualsense_short_and_truncated() {
+        // The b3 byte lives at o+9, so the floor is o+10: USB needs >= 11,
+        // BT needs >= 12. Shorter reports must return None (never panic).
+        assert!(parse_dualsense(&[0u8; 9], false).is_none());
+        assert!(parse_dualsense(&[0u8; 10], false).is_none());
+        assert!(parse_dualsense(&[0u8; 10], true).is_none());
+        assert!(parse_dualsense(&[0u8; 11], true).is_none());
+        // A minimal parseable report with no extended sections.
+        let mut buf = [0u8; 11];
+        buf[0] = 0x01;
+        let s = parse_dualsense(&buf, false).expect("11-byte USB report must parse");
+        assert_eq!(s.battery, -1);
+        assert_eq!(s.gyro, [0.0, 0.0, 0.0]);
+        assert_eq!(s.touch_count, 0);
     }
 }
